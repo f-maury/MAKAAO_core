@@ -1,0 +1,33 @@
+cff-version: 1.0.0
+message: "If you use this software or data, please cite it as below."
+authors:
+  - family-names: Maury
+    given-names: Fabien
+    orcid: https://orcid.org/0000-0003-2854-0167
+  - family-names: Grosdidier
+    given-names: Solène
+  - family-names: Halberda
+    given-names: Killian
+    orcid: https://orcid.org/0009-0004-6733-4037
+  - family-names: Delmont
+    given-names: Emilien
+    orcid: https://orcid.org/0000-0002-5591-2774
+  - family-names: Hachulla
+    given-names: Eric
+    orcid: https://orcid.org/0000-0001-7432-847X
+  - family-names: Desguerre
+    given-names: Isabelle
+    orcid: https://orcid.org/0000-0002-4074-5862
+  - family-names: Maury
+    given-names: Fabien
+    orcid: https://orcid.org/0000-0003-2854-0167
+  - family-names: Coulet
+    given-names: Adrien
+    orcid: https://orcid.org/0000-0002-1466-062X
+  - family-names: de Dieuleveult
+    given-names: Maud
+    orcid: https://orcid.org/0000-0002-3387-1836
+title: "MAKAAO: A FAIR index of human autoantibody and its associated knowledge graph"
+and its associated knowledge graph"
+version: 1.0.0
+identifiers:
