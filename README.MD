@@ -14,15 +14,15 @@
 
    2. Create a Conda environment with the needed packages:
    ```bash
-      conda create -n makaao python=3.11
-      conda activate makaao
-      python -m pip install -r requirements.txt
+   conda create -n makaao python=3.11
+   conda activate makaao
+   python -m pip install -r requirements.txt
    ```
    
    3. Browse to `scripts/` folder, and run the MAKAAO scripts in correct order:
    ```bash
-      cd scripts
-      python 00_xlsx_to_csv.py
+   cd scripts
+   python 00_xlsx_to_csv.py
    ```
    ...
 
