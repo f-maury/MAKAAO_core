@@ -2,7 +2,7 @@
 
 # ⚠️ DISCLAIMER: Work in progress ⚠️
 
-##Installation
+## Installation
 
    1. Download the repository: 
    ```bash
