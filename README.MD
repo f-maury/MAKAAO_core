@@ -9,7 +9,7 @@
    git clone https://github.com/f-maury/MAKAAO_core
    ```
 
-   2. Create a Conda environment with the needed prackages:
+   2. Create a Conda environment with the needed packages:
    ```bash
       conda create -n makaao python=3.11
       conda activate makaao
@@ -26,8 +26,7 @@
       * MAKAAO KG and Lite KG will be located in `kg/` folder
       * CSV reports and PNG plots will be in `plots_and_stats/`
       * Normalized tables will be in `data/processed_tables/`.
-      * Enrichment tables will be in `data/enrichment_tables`.
-   ```
+      * Enrichment tables will be in `data/enrichment_tables/`.
 
 ## WARNING
 
