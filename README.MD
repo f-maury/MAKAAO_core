@@ -2,11 +2,14 @@
 
 # ⚠️ DISCLAIMER: Work in progress ⚠️
 
+# MAKAAO knowledge graph
+
 ## Installation
 
-   1. Download the repository: 
+   1. Download the repository and enter it: 
    ```bash
    git clone https://github.com/f-maury/MAKAAO_core
+   cd MAKAAO_core
    ```
 
    2. Create a Conda environment with the needed packages:
@@ -16,8 +19,9 @@
       python -m pip install -r requirements.txt
    ```
    
-   3. Run the MAKAAO scripts in correct order:
+   3. Browse to `scripts/` folder, and run the MAKAAO scripts in correct order:
    ```bash
+      cd scripts
       python 00_xlsx_to_csv.py
    ```
    ...
