@@ -13,12 +13,13 @@ UMLS_API_KEY = "67bd1b8b-87f0-40de-bf20-255e6f1721a3"  # WRITE YOUR UMLS API KEY
 _lim = sys.maxsize
 while True:
     try:
-        csv.field_size_limit(_lim); break
+        csv.field_size_limit(_lim); break # allow processing of very long string in CSV cells
     except OverflowError:
         _lim //= 10
 
-IN_PATH  = "/mnt/d/umls-2024AB-full_metamor/2024AB-full/2024AB/2024AB/META/MRCONSO.RRF"
-OUT_HPO  = "../data/enrichment_tables/umls_hpo.csv"
+IN_PATH  = "/mnt/d/umls-2024AB-full_metamor/2024AB-full/2024AB/2024AB/META/MRCONSO.RRF" # path to MRCONSO.RRF we will use (ideally ../data/umls/MRCONSO.RRF)
+
+OUT_HPO  = "../data/enrichment_tables/umls_hpo.csv" # enrichment tables we will produce
 OUT_ORPH = "../data/enrichment_tables/umls_orphanet.csv"
 OUT_SCT  = "../data/enrichment_tables/umls_snomed.csv"
 OUT_LNC  = "../data/enrichment_tables/umls_loinc.csv"
@@ -26,7 +27,7 @@ OUT_CHE  = "../data/enrichment_tables/umls_chebi.csv"
 OUT_NAME = "../data/enrichment_tables/umls_names.csv"
 
 HEADER = ["CUI","LAT","TS","LUI","STT","SUI","ISPREF","AUI","SAUI","SCUI",
-          "SDUI","SAB","TTY","CODE","STR","SRL","SUPPRESS","CVF"]
+          "SDUI","SAB","TTY","CODE","STR","SRL","SUPPRESS","CVF"] # columns in mrconso
 
 with open(IN_PATH, "r", encoding="utf-8", errors="replace", newline="") as fin, \
      open(OUT_HPO,  "w", encoding="utf-8", newline="") as fhpo, \
@@ -36,7 +37,7 @@ with open(IN_PATH, "r", encoding="utf-8", errors="replace", newline="") as fin, 
      open(OUT_CHE,  "w", encoding="utf-8", newline="") as fche, \
      open(OUT_NAME, "w", encoding="utf-8", newline="") as fnames:
     reader = csv.reader(fin, delimiter="|")
-    whpo   = csv.writer(fhpo,   lineterminator="\n")
+    whpo   = csv.writer(fhpo,   lineterminator="\n") # open files to write, and file to read
     worph  = csv.writer(forph,  lineterminator="\n")
     wsct   = csv.writer(fsct,   lineterminator="\n")
     wlnc   = csv.writer(flnc,   lineterminator="\n")
@@ -88,19 +89,19 @@ with open(IN_PATH, "r", encoding="utf-8", errors="replace", newline="") as fin, 
 
 ###########################################################################################
 
-xml_path = "../data/en_product4.xml"
-out_csv  = "../data/enrichment_tables/orphanet_hpo_links.csv"
+xml_path = "../data/en_product4.xml" # read Orphanet file with disease-HPO links
+out_csv  = "../data/enrichment_tables/orphanet_hpo_links.csv" # write in new csv file
 
 base_url_orpha = "http://www.orpha.net/ORDO/Orphanet_"
 base_url_hpo   = "http://purl.obolibrary.org/obo/"
 
 def local(tag: str) -> str:
-    return tag.rsplit('}', 1)[-1] if '}' in tag else tag
+    return tag.rsplit('}', 1)[-1] if '}' in tag else tag # extract name from XML tag
 
 def get_lang(elem):
-    return elem.attrib.get("lang") or elem.attrib.get("{http://www.w3.org/XML/1998/namespace}lang")
+    return elem.attrib.get("lang") or elem.attrib.get("{http://www.w3.org/XML/1998/namespace}lang") # extract xml:lang attribute or lang attribute from XML element
 
-def freq_rank(txt: str) -> tuple[int, str]:
+def freq_rank(txt: str) -> tuple[int, str]: # translate frequency text to numerical rank in a tuple, if nothing found return a tuple with -1
     if not txt: return (-1, "Unknown")
     t = txt.strip().lower()
     if "obligate" in t or "always present" in t or "100%" in t: return (5, txt.strip())
@@ -112,25 +113,25 @@ rows = []  # (orpha_iri, hpo_iri, hpo_term, frequency, rank)
 
 root = ET.parse(xml_path).getroot()
 for disorder in root.iter():
-    if local(disorder.tag) != "Disorder":
+    if local(disorder.tag) != "Disorder": # find Disorders in the XML structure
         continue
 
     oc, assoc_list = None, None
     for ch in disorder:
         n = local(ch.tag)
-        if n == "OrphaCode" and (ch.text or "").strip():
+        if n == "OrphaCode" and (ch.text or "").strip(): # get orpha code
             oc = ch.text.strip()
-        elif n == "HPODisorderAssociationList":
+        elif n == "HPODisorderAssociationList": # get HPO associations
             assoc_list = ch
     if not oc or assoc_list is None:
         continue
 
     for assoc in assoc_list:
-        if local(assoc.tag) != "HPODisorderAssociation":
+        if local(assoc.tag) != "HPODisorderAssociation": # if no HPO association, skip
             continue
 
-        hpo_id, hpo_term = None, None
-        hpo = next((n for n in assoc if local(n.tag) == "HPO"), None)
+        hpo_id, hpo_term = None, None 
+        hpo = next((n for n in assoc if local(n.tag) == "HPO"), None) # if there are HPO terms, for each of them, we get some info
         if hpo is not None:
             hid = next((n for n in hpo if local(n.tag) == "HPOId"), None)
             htm = next((n for n in hpo if local(n.tag) == "HPOTerm"), None)
@@ -142,7 +143,7 @@ for disorder in root.iter():
             continue
 
         freq_name = None
-        freq = next((n for n in assoc if local(n.tag) == "HPOFrequency"), None)
+        freq = next((n for n in assoc if local(n.tag) == "HPOFrequency"), None) # get the frequency of each HPO term
         if freq is not None:
             names = [n for n in freq if local(n.tag) == "Name" and (n.text or "").strip()]
             en = next((n for n in names if (get_lang(n) or "").lower() == "en"), None)
@@ -160,7 +161,7 @@ for disorder in root.iter():
                 rank,
             ))
 
-df = pd.DataFrame(rows, columns=["orpha_code","HPOId","HPOTerm","frequency","rank"])
+df = pd.DataFrame(rows, columns=["orpha_code","HPOId","HPOTerm","frequency","rank"]) # write result in a csv file
 if not df.empty:
     df = (df.sort_values("rank", ascending=False)
             .drop_duplicates(["orpha_code","HPOId"])
@@ -174,31 +175,32 @@ print(f"Wrote {len(df):,} rows to {out_csv}")
 
 
 # --- config ---
-INPUT_CSV   = "../data/makaao_core.csv"
-OUTPUT_CSV  = "../data/enrichment_tables/code_names.csv"  # required for UMLS + SNOMED
+INPUT_CSV   = "../data/makaao_core.csv" # read makaao_core
+OUTPUT_CSV  = "../data/enrichment_tables/code_names.csv"  # write in code_names.csv; required for UMLS + SNOMED
 
+# API URLs to retrieve info from various terminologies
 UNIPROT_JSON_URL       = "https://rest.uniprot.org/uniprotkb/{acc}"
 UMLS_CONCEPT_URL       = "https://uts-ws.nlm.nih.gov/rest/content/current/CUI/{cui}"
 UMLS_SOURCE_CODE_URL   = "https://uts-ws.nlm.nih.gov/rest/content/current/source/{sab}/{code}"
 OLS4_TERM_API          = "https://www.ebi.ac.uk/ols4/api/ontologies/{onto}/terms"
 HEADERS = {"Accept": "application/json"}
 
-SNOMED_SABS = ["SNOMEDCT_US", "SNOMEDCT", "SNOMEDCT_CORE", "SNOMEDCT_VET", "SNOMEDCT_ES", "SNOMEDCT_UK"]
+SNOMED_SABS = ["SNOMEDCT_US", "SNOMEDCT", "SNOMEDCT_CORE", "SNOMEDCT_VET", "SNOMEDCT_ES", "SNOMEDCT_UK"] # select SNOMED versions we will check
 
 # ---------- helpers ----------
-def split_items(cell: str) -> List[str]:
+def split_items(cell: str) -> List[str]: # split string around various delimiters, return a list
     """Generic split for ID fields: split on whitespace, pipe, comma, semicolon."""
     if not cell:
         return []
     return [s for s in re.split(r"[ \t\r\n|,;]+", cell.strip()) if s]
 
-def split_items_pipe(cell: str) -> List[str]:
+def split_items_pipe(cell: str) -> List[str]: # split string around |, return list
     """Strict split for LOINC columns: only '|' or newlines. Preserves spaces inside names."""
     if not cell:
         return []
     return [s.strip() for s in re.split(r"[|\r\n]+", cell.strip()) if s.strip()]
 
-def req_get(url: str, params: Optional[dict] = None, headers: Optional[dict] = None,
+def req_get(url: str, params: Optional[dict] = None, headers: Optional[dict] = None, # function to query an API with retries
             retries: int = 3, backoff: float = 0.7, timeout: int = 25) -> Optional[requests.Response]:
     last = None
     for i in range(retries):
@@ -218,33 +220,54 @@ def req_get(url: str, params: Optional[dict] = None, headers: Optional[dict] = N
 
 # ---------- normalizers ----------
 def norm_uniprot(x: str) -> Optional[str]:
+    # Remove optional UniProt prefix "UP" or "UP:" (case-insensitive), then strip spaces.
     x = re.sub(r"(?i)^UP:?", "", (x or "").strip())
+    # If the remaining string is 6–10 alphanumeric characters, return it uppercased;
+    # otherwise return None (invalid UniProt-style ID).
     return x.upper() if re.fullmatch(r"[A-Za-z0-9]{6,10}", x) else None
 
+
 def norm_umls(x: str) -> Optional[str]:
+    # Match optional "CUI:" prefix, followed by a CUI of the form C + 7–8 digits (case-insensitive).
     m = re.fullmatch(r"(?i)(?:CUI:)?(C\d{7,8})", (x or "").strip())
+    # If matched, return the CUI in uppercase (e.g. "C1234567"); else None.
     return m.group(1).upper() if m else None
+
 
 def norm_snomed_prefixed(x: str) -> Optional[str]:
     """Accept only explicitly prefixed SNOMED codes from disease_id."""
+    # Require one of the prefixes "SNOMEDCT:", "SNOMED:", or "SCTID:", case-insensitive,
+    # followed by 3–18 digits. Capture only the numeric part.
     m = re.fullmatch(r"(?i)(?:SNOMEDCT:|SNOMED:|SCTID:)(\d{3,18})", (x or "").strip())
+    # Return the numeric SNOMED ID (string) or None if no match.
     return m.group(1) if m else None
+
 
 def norm_orpha(x: str) -> Optional[str]:
+    # Require "ORPHA:" or "ORPHANET:" (case-insensitive) followed by digits; capture the digits.
     m = re.fullmatch(r"(?i)(?:ORPHA:|ORPHANET:)(\d+)", (x or "").strip())
+    # Return the numeric Orphanet ID (string) or None.
     return m.group(1) if m else None
+
 
 def norm_chebi(x: str) -> Optional[str]:
+    # Allow optional "CHEBI:", "CHE:" prefix (case-insensitive) before digits; capture the digits.
     m = re.fullmatch(r"(?i)(?:CHEBI:|CHE:)?(\d+)", (x or "").strip())
+    # Return the numeric ChEBI ID (string) or None.
     return m.group(1) if m else None
 
+
 def norm_loinc_part(x: str) -> Optional[str]:
+    # Normalize to uppercase and strip spaces.
     x = (x or "").strip().upper()
+    # Accept LOINC part IDs of the form "LP" + digits, with optional "-digits" suffix (e.g. LP12345-6).
     m = re.fullmatch(r"LP\d+(?:-\d+)?", x)
+    # Return the normalized part ID or None.
     return m.group(0) if m else None
 
+
 # ---------- resolvers ----------
-def uniprot_name(acc: str) -> Tuple[Optional[str], str]:
+def uniprot_name(acc: str) -> Tuple[Optional[str], str]: # function to query Uniprot API using a Uniprot ID, return name and page URL
     r = req_get(UNIPROT_JSON_URL.format(acc=acc))
     page = f"https://www.uniprot.org/uniprotkb/{acc}"
     if not r or r.status_code != 200:
@@ -262,7 +285,7 @@ def uniprot_name(acc: str) -> Tuple[Optional[str], str]:
     )
     return name, page
 
-def umls_name(cui: str) -> Tuple[Optional[str], str]:
+def umls_name(cui: str) -> Tuple[Optional[str], str]: # function to get infos from UMLS API from a CUI, return name and page URL; use API key
     page = f"https://uts.nlm.nih.gov/uts/umls/concept/{cui}"
     r = req_get(UMLS_CONCEPT_URL.format(cui=cui), params={"apiKey": UMLS_API_KEY})
     if not r or r.status_code != 200:
@@ -273,7 +296,7 @@ def umls_name(cui: str) -> Tuple[Optional[str], str]:
         return None, page
     return (d.get("result") or {}).get("name"), page
 
-def snomed_name(code: str) -> Tuple[Optional[str], str]:
+def snomed_name(code: str) -> Tuple[Optional[str], str]: # function to get SNOMED name from UMLS API using SNOMED code, return name and page URL; use API key
     page = f"https://snomed.info/id/{code}"
     for sab in SNOMED_SABS:
         r = req_get(UMLS_SOURCE_CODE_URL.format(sab=sab, code=code), params={"apiKey": UMLS_API_KEY})
@@ -287,11 +310,11 @@ def snomed_name(code: str) -> Tuple[Optional[str], str]:
                 return name, page
     return None, page
 
-def _ols_label(resp_json: dict) -> Optional[str]:
+def _ols_label(resp_json: dict) -> Optional[str]: #extract 1st label from OLS response
     terms = (resp_json.get("_embedded") or {}).get("terms") or []
     return terms[0].get("label") if terms else None
 
-def orpha_name(orpha_id: str) -> Tuple[Optional[str], str]:
+def orpha_name(orpha_id: str) -> Tuple[Optional[str], str]: # query OLS API for Orphanet name using Orpha ID, return name and page URL
     page = f"https://www.orpha.net/consor/cgi-bin/OC_Exp.php?lng=en&Expert={orpha_id}"
     # Try short_form
     r = req_get(OLS4_TERM_API.format(onto="ordo"), params={"short_form": f"Orphanet_{orpha_id}"})
@@ -324,7 +347,7 @@ def orpha_name(orpha_id: str) -> Tuple[Optional[str], str]:
                 pass
     return None, page
 
-def chebi_name(num: str) -> Tuple[Optional[str], str]:
+def chebi_name(num: str) -> Tuple[Optional[str], str]: # query OLS API for ChEBI name using ChEBI ID number, return name and page URL
     page = f"https://www.ebi.ac.uk/chebi/searchId.do?chebiId=CHEBI:{num}"
     r = req_get(OLS4_TERM_API.format(onto="chebi"), params={"obo_id": f"CHEBI:{num}"})
     if not r or r.status_code != 200:
@@ -337,7 +360,7 @@ def chebi_name(num: str) -> Tuple[Optional[str], str]:
 
 # ---------- main ----------
 def main():
-    if not UMLS_API_KEY or UMLS_API_KEY.startswith("REPLACE_"):
+    if not UMLS_API_KEY or UMLS_API_KEY.startswith("REPLACE_"): # warning if no UMLS API key
         raise SystemExit("Set UMLS_API_KEY at top of script.")
 
     uni: List[str] = []
@@ -348,19 +371,19 @@ def main():
     umls_from_dis: List[str] = []
     loinc_map: Dict[str, str] = {}  # id -> name
 
-    with open(INPUT_CSV, newline="", encoding="utf-8") as f:
+    with open(INPUT_CSV, newline="", encoding="utf-8") as f: # read makaao_core.csv
         rdr = csv.DictReader(f)
         cols = {c.lower(): c for c in (rdr.fieldnames or [])}
 
-        # New names first, then legacy fallbacks
-        up_col        = cols.get("uniprot_id") or cols.get("uniprot_target_id")
-        cui_col       = cols.get("umls_id") or cols.get("umls_target_id")
-        cheb_col      = cols.get("chebi_id") or cols.get("chebi_target_id")
-        dis_col       = cols.get("disease_id") or cols.get("related_disease_id")
-        loinc_id_col  = cols.get("loinc_part_id") or cols.get("loinc_id")
-        loinc_nm_col  = cols.get("loinc_part") or cols.get("loinc_name")
+        # column names
+        up_col        = cols.get("uniprot_id")
+        cui_col       = cols.get("umls_id")
+        cheb_col      = cols.get("chebi_id")
+        dis_col       = cols.get("disease_id")
+        loinc_id_col  = cols.get("loinc_part_id")
+        loinc_nm_col  = cols.get("loinc_part")
 
-        for row in rdr:
+        for row in rdr: # parse each column of the dict read from makaao core csv
             if up_col and row.get(up_col):
                 uni.extend(split_items(row[up_col]))
             if cui_col and row.get(cui_col):
@@ -368,7 +391,7 @@ def main():
             if cheb_col and row.get(cheb_col):
                 chebi.extend(split_items(row[cheb_col]))
 
-            if dis_col and row.get(dis_col):
+            if dis_col and row.get(dis_col): # check what type of disease ID we have
                 for t in split_items(row[dis_col]):
                     sct = norm_snomed_prefixed(t)
                     if sct:
@@ -380,13 +403,13 @@ def main():
                     if cu:
                         umls_from_dis.append(cu); continue
 
-            if loinc_id_col and row.get(loinc_id_col):
+            if loinc_id_col and row.get(loinc_id_col): # if loinc column is there, we parse it.
                 ids = [norm_loinc_part(x) for x in split_items_pipe(row[loinc_id_col])]
                 ids = [x for x in ids if x]
                 names = split_items_pipe(row.get(loinc_nm_col, "")) if loinc_nm_col else []
                 for i, lid in enumerate(ids):
                     nm = names[i] if i < len(names) else ""
-                    if lid not in loinc_map or not loinc_map[lid]:
+                    if lid not in loinc_map or not loinc_map[lid]: # try to map loinc id to names
                         loinc_map[lid] = nm
 
     # normalize and dedupe
