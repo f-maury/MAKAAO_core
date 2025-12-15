@@ -2187,6 +2187,591 @@ def summarize_disease_umls_annotations(
 
     print("[OUT] Done.")
 
+#####################################################################################
+
+def summarize_aab_taxonomy_nodes(
+    in_path: Union[str, Path],
+    out_dir: Union[str, Path],
+    prefix: Optional[str] = None,
+) -> None:
+    """
+    In the Autoantibody taxonomy, count:
+
+      - category nodes: AAB classes that have at least one AAB child
+      - leaf nodes:     AAB classes with no AAB children
+
+    The root of the taxonomy is the Autoantibody class.
+
+    Output CSV: <prefix>_aab_taxonomy_nodes.csv
+
+    Columns:
+      aab_class_uri
+      aab_label
+      node_type              # "category" or "leaf"
+      n_child_aab_classes    # number of AAB children
+    """
+    in_path = Path(in_path)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    base = prefix if prefix is not None else in_path.stem
+
+    g = Graph()
+    g.parse(in_path)
+
+    MAK = "http://makaao.inria.fr/kg/"
+    AUTOANTIBODY_CLASS = MAK + "Autoantibody"
+
+    # ---------- helper: get main English label for a URI ----------
+    def get_en_label(uri_str: str) -> str:
+        """
+        Prefer rdfs:label with @en language tag.
+        If none, take the first rdfs:label (any language).
+        If no label, return empty string.
+        """
+        u = URIRef(uri_str)
+        best_any = None
+        for lbl in g.objects(u, RDFS.label):
+            if isinstance(lbl, Literal):
+                if lbl.language == "en":
+                    return str(lbl)
+                if best_any is None:
+                    best_any = str(lbl)
+        return best_any or ""
+
+    # ---------- 1) Collect all classes and subclass graph ----------
+    classes: Set[str] = set()
+    subclass_children: Dict[str, Set[str]] = defaultdict(set)
+
+    for s, o in g.subject_objects(RDF.type):
+        if o in (OWL.Class, RDFS.Class):
+            classes.add(str(s))
+
+    for s, p, o in g.triples((None, RDFS.subClassOf, None)):
+        parent_uri = str(o)
+        child_uri = str(s)
+        subclass_children[parent_uri].add(child_uri)
+
+    if AUTOANTIBODY_CLASS not in classes:
+        print("[AAB TAXONOMY] Autoantibody class not found; nothing to do.")
+        return
+
+    # ---------- 2) All AAB classes under Autoantibody (including root) ----------
+    aab_taxonomy_nodes: Set[str] = set()
+    stack: List[str] = [AUTOANTIBODY_CLASS]
+    visited: Set[str] = set()
+
+    while stack:
+        c = stack.pop()
+        if c in visited:
+            continue
+        visited.add(c)
+        if c in classes:
+            aab_taxonomy_nodes.add(c)
+        for child in subclass_children.get(c, ()):
+            # Only traverse classes
+            if child not in visited:
+                stack.append(child)
+
+    # ---------- 3) Classify category vs leaf ----------
+    category_nodes: Set[str] = set()
+    leaf_nodes: Set[str] = set()
+
+    for cls in aab_taxonomy_nodes:
+        # Only count children that are also in the AAB taxonomy
+        child_aab = [
+            ch for ch in subclass_children.get(cls, ())
+            if ch in aab_taxonomy_nodes
+        ]
+        if child_aab:
+            category_nodes.add(cls)
+        else:
+            leaf_nodes.add(cls)
+
+    # ---------- 4) Build rows and write CSV ----------
+    rows = []
+    for cls in sorted(aab_taxonomy_nodes):
+        child_aab = [
+            ch for ch in subclass_children.get(cls, ())
+            if ch in aab_taxonomy_nodes
+        ]
+        rows.append({
+            "aab_class_uri": cls,
+            "aab_label": get_en_label(cls),
+            "node_type": "category" if cls in category_nodes else "leaf",
+            "n_child_aab_classes": len(child_aab),
+        })
+
+    out_path = out_dir / f"{base}_aab_taxonomy_nodes.csv"
+    with out_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "aab_class_uri",
+                "aab_label",
+                "node_type",
+                "n_child_aab_classes",
+            ],
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print(f"[AAB TAXONOMY] total AAB classes under Autoantibody: {len(aab_taxonomy_nodes)}")
+    print(f"[AAB TAXONOMY] category nodes: {len(category_nodes)}")
+    print(f"[AAB TAXONOMY] leaf nodes: {len(leaf_nodes)}")
+    print(f"[AAB TAXONOMY] Wrote {out_path}")
+
+####################################################################################################
+def summarize_core_entity_counts(
+    in_path: Union[str, Path],
+    out_dir: Union[str, Path],
+    prefix: Optional[str] = None,
+) -> None:
+    """
+    Count:
+      - Target: number of unique instances whose rdf:type is Target or any subclass.
+      - AutoimmuneDisease: number of unique instances whose rdf:type is AutoimmuneDisease
+                           or any subclass.
+      - Autoantibody: number of unique classes strictly descended from Autoantibody
+                      (all rdfs:subClassOf* subclasses, excluding Autoantibody itself).
+      - HP:0000118: number of unique classes directly descended from HP_0000118
+                    (direct rdfs:subClassOf children), EXCLUDING those that are also
+                    descendants of HP:0030057.
+      - HP:0030057: number of unique classes strictly descended from HP_0030057
+                    (all rdfs:subClassOf* subclasses, excluding HP:0030057 itself).
+      - LOINC parts: number of unique LOINC part URIs.
+
+    If an HP class is descended from both HP:0000118 and HP:0030057, it is counted
+    only under HP:0030057 (and removed from the HP:0000118 direct children category).
+
+    Output CSV 1 (summary): <prefix>_core_entity_counts.csv
+
+    Columns:
+      entity                       # "Target", "AutoimmuneDisease", "Autoantibody",
+                                   # "HP:0030057", "HP:0000118", "LOINC_part"
+      root_class_uri               # empty for LOINC_part
+      n_direct_or_descendant_instances
+        - for Target and AutoimmuneDisease: instance count
+        - for Autoantibody / HP:0000118 / HP:0030057: class count
+
+    Output CSV 2 (provenance): <prefix>_core_entity_counts_triples.csv
+
+    Columns:
+      category          # e.g. "Target_instance", "AutoimmuneDisease_instance",
+                        # "Autoantibody_descendant_class", ...
+      root_entity       # e.g. "Target", "AutoimmuneDisease"
+      item_uri          # the counted URI (unique within a category)
+      triple_subject
+      triple_predicate
+      triple_object     # triple that justified counting this item in this category
+    """
+    in_path = Path(in_path)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    base = prefix if prefix is not None else in_path.stem
+
+    g = Graph()
+    g.parse(in_path)
+
+    MAK = "http://makaao.inria.fr/kg/"
+    TARGET_CLASS = MAK + "Target"
+    AUTOANTIBODY_CLASS = MAK + "Autoantibody"
+    AUTOIMMUNE_DISEASE_CLASS = MAK + "AutoimmuneDisease"
+
+    # For origin classification
+    MAK_ORPHA_PREFIX = MAK + "orpha_"
+    ORDO_PREFIX = "http://www.orpha.net/ORDO/Orphanet_"
+    UMLS_PREFIX = "https://uts.nlm.nih.gov/uts/umls/concept/"
+    SNOMED_PREFIX_HTTP = "http://snomed.info/id/"
+    SNOMED_PREFIX_HTTPS = "https://snomed.info/id/"
+    SNOMED_BIOPORTAL_PREFIX = "http://purl.bioontology.org/ontology/SNOMEDCT/"
+
+    # ---------- helpers ----------
+    def is_loinc_part(uri: str) -> bool:
+        return uri.startswith("https://loinc.org/LP") or uri.startswith("http://loinc.org/LP")
+
+    def all_descendant_classes(root_uri: str, subclass_children: Dict[str, Set[str]]) -> Set[str]:
+        """
+        Return {root_uri} ∪ all subclasses (via rdfs:subClassOf*).
+        """
+        result: Set[str] = set()
+        stack: List[str] = [root_uri]
+        visited: Set[str] = set()
+        while stack:
+            c = stack.pop()
+            if c in visited:
+                continue
+            visited.add(c)
+            result.add(c)
+            for child in subclass_children.get(c, ()):
+                stack.append(child)
+        return result
+
+    def classify_target_origin(uri: str) -> str:
+        if uri.startswith(MAK + "UP_"):
+            return "UniProt"
+        if uri.startswith(MAK + "CHEBI_"):
+            return "ChEBI"
+        if uri.startswith(UMLS_PREFIX):
+            return "UMLS"
+        return "Other"
+
+    def classify_autoimmune_origin(uri: str) -> str:
+        if uri.startswith(MAK_ORPHA_PREFIX) or uri.startswith(ORDO_PREFIX):
+            return "Orphanet"
+        if (
+            uri.startswith(SNOMED_PREFIX_HTTP)
+            or uri.startswith(SNOMED_PREFIX_HTTPS)
+            or uri.startswith(SNOMED_BIOPORTAL_PREFIX)
+        ):
+            return "SNOMED"
+        if uri.startswith(UMLS_PREFIX):
+            return "UMLS"
+        return "Other"
+
+    # ---------- 1) Collect classes, subclass graph, instance types ----------
+    classes: Set[str] = set()
+    subclass_children: Dict[str, Set[str]] = defaultdict(set)
+    instance_types: Dict[str, Set[str]] = defaultdict(set)
+
+    for s, o in g.subject_objects(RDF.type):
+        s_uri = str(s)
+        o_uri = str(o)
+        instance_types[s_uri].add(o_uri)
+        if o in (OWL.Class, RDFS.Class):
+            classes.add(s_uri)
+
+    for s, p, o in g.triples((None, RDFS.subClassOf, None)):
+        parent_uri = str(o)
+        child_uri = str(s)
+        subclass_children[parent_uri].add(child_uri)
+
+    # ---------- 2) Build candidate class URI set (explicit classes + subclass graph) ----------
+    candidate_class_uris: Set[str] = set(classes)
+    candidate_class_uris.update(subclass_children.keys())
+    for children in subclass_children.values():
+        candidate_class_uris.update(children)
+
+    # ---------- 3) Locate root classes ----------
+    target_root_uri = TARGET_CLASS if TARGET_CLASS in candidate_class_uris else None
+    autoimmune_root_uri = (
+        AUTOIMMUNE_DISEASE_CLASS if AUTOIMMUNE_DISEASE_CLASS in candidate_class_uris else None
+    )
+    auto_root_uri = AUTOANTIBODY_CLASS if AUTOANTIBODY_CLASS in candidate_class_uris else None
+
+    hp003_root_uri = None  # HP:0030057
+    hp000_root_uri = None  # HP:0000118
+
+    for c in candidate_class_uris:
+        if ("HP_0030057" in c) or ("HP:0030057" in c):
+            hp003_root_uri = c
+        if ("HP_0000118" in c) or ("HP:0000118" in c):
+            hp000_root_uri = c
+
+    # ---------- 4) Instance-level categories: Target and AutoimmuneDisease ----------
+    def collect_instances_under_root(
+        root_uri: Optional[str],
+    ) -> Tuple[Set[str], Dict[str, Tuple[str, str, str]]]:
+        """
+        Return:
+          - set of instance URIs
+          - mapping instance_uri -> (s, p, o) triple that justified the count
+        """
+        instances: Set[str] = set()
+        triples: Dict[str, Tuple[str, str, str]] = {}
+        if root_uri is None:
+            return instances, triples
+
+        all_classes_for_root = all_descendant_classes(root_uri, subclass_children)
+
+        for inst_uri, types in instance_types.items():
+            matched_class = None
+            for cls in types:
+                if cls in all_classes_for_root:
+                    matched_class = cls
+                    break
+            if matched_class is not None:
+                instances.add(inst_uri)
+                if inst_uri not in triples:
+                    triples[inst_uri] = (
+                        inst_uri,
+                        str(RDF.type),
+                        matched_class,
+                    )
+        return instances, triples
+
+    target_instances, target_inst_triples = collect_instances_under_root(target_root_uri)
+    autoimmune_instances, autoimmune_inst_triples = collect_instances_under_root(autoimmune_root_uri)
+
+    n_target = len(target_instances)
+    n_autoimmune = len(autoimmune_instances)
+
+    # Origin breakdowns
+    from collections import defaultdict as _dd
+    target_origin_counts = _dd(int)
+    for uri in target_instances:
+        origin = classify_target_origin(uri)
+        target_origin_counts[origin] += 1
+
+    autoimmune_origin_counts = _dd(int)
+    for uri in autoimmune_instances:
+        origin = classify_autoimmune_origin(uri)
+        autoimmune_origin_counts[origin] += 1
+
+    # ---------- 4b) Autoantibody descendant classes (strict), with provenance ----------
+    auto_descendant_classes: Set[str] = set()
+    auto_desc_triples: Dict[str, Tuple[str, str, str]] = {}
+    if auto_root_uri is not None:
+        stack: List[Tuple[str, str]] = [
+            (auto_root_uri, child)
+            for child in subclass_children.get(auto_root_uri, set())
+        ]
+        visited: Set[str] = set()
+        while stack:
+            parent, child = stack.pop()
+            if child in visited:
+                continue
+            visited.add(child)
+            auto_descendant_classes.add(child)
+            if child not in auto_desc_triples:
+                auto_desc_triples[child] = (
+                    child,
+                    str(RDFS.subClassOf),
+                    parent,
+                )
+            for grand in subclass_children.get(child, set()):
+                stack.append((child, grand))
+
+    # ---------- 4c) HP:0030057 strict descendant classes (all subclasses except root) ----------
+    hp003_descendant_classes: Set[str] = set()
+    hp003_desc_triples: Dict[str, Tuple[str, str, str]] = {}
+    if hp003_root_uri is not None:
+        stack: List[Tuple[str, str]] = [
+            (hp003_root_uri, child)
+            for child in subclass_children.get(hp003_root_uri, set())
+        ]
+        visited: Set[str] = set()
+        while stack:
+            parent, child = stack.pop()
+            if child in visited:
+                continue
+            visited.add(child)
+            hp003_descendant_classes.add(child)
+            if child not in hp003_desc_triples:
+                hp003_desc_triples[child] = (
+                    child,
+                    str(RDFS.subClassOf),
+                    parent,
+                )
+            for grand in subclass_children.get(child, set()):
+                stack.append((child, grand))
+
+    # ---------- 4d) HP:0000118 direct child classes (before overlap filtering) ----------
+    hp000_direct_children_classes: Set[str] = set()
+    hp000_child_triples: Dict[str, Tuple[str, str, str]] = {}
+    if hp000_root_uri is not None:
+        for child in subclass_children.get(hp000_root_uri, set()):
+            hp000_direct_children_classes.add(child)
+            if child not in hp000_child_triples:
+                hp000_child_triples[child] = (
+                    child,
+                    str(RDFS.subClassOf),
+                    hp000_root_uri,
+                )
+
+    # ---------- 4e) Remove HP classes that belong to both HP:0000118 and HP:0030057 ----------
+    if hp000_root_uri is not None and hp003_root_uri is not None:
+        overlap = hp000_direct_children_classes & hp003_descendant_classes
+        for cls in overlap:
+            hp000_direct_children_classes.discard(cls)
+            hp000_child_triples.pop(cls, None)
+
+    n_auto_classes = len(auto_descendant_classes)
+    n_hp000_classes = len(hp000_direct_children_classes)
+    n_hp003_classes = len(hp003_descendant_classes)
+
+    # ---------- 5) Count unique LOINC parts, with provenance ----------
+    loinc_parts: Set[str] = set()
+    loinc_triples: Dict[str, Tuple[str, str, str]] = {}
+
+    for s, p, o in g:
+        if isinstance(s, URIRef):
+            su = str(s)
+            if is_loinc_part(su) and su not in loinc_triples:
+                loinc_parts.add(su)
+                loinc_triples[su] = (str(s), str(p), str(o))
+        if isinstance(o, URIRef):
+            ou = str(o)
+            if is_loinc_part(ou) and ou not in loinc_triples:
+                loinc_parts.add(ou)
+                loinc_triples[ou] = (str(s), str(p), str(o))
+
+    n_loinc_parts = len(loinc_parts)
+
+    # ---------- 6) Build rows and write main summary CSV ----------
+    rows = []
+    if target_root_uri is not None:
+        rows.append({
+            "entity": "Target",
+            "root_class_uri": target_root_uri,
+            "n_direct_or_descendant_instances": n_target,
+        })
+    if autoimmune_root_uri is not None:
+        rows.append({
+            "entity": "AutoimmuneDisease",
+            "root_class_uri": autoimmune_root_uri,
+            "n_direct_or_descendant_instances": n_autoimmune,
+        })
+    if auto_root_uri is not None:
+        rows.append({
+            "entity": "Autoantibody",
+            "root_class_uri": auto_root_uri,
+            "n_direct_or_descendant_instances": n_auto_classes,  # class count
+        })
+    if hp003_root_uri is not None:
+        rows.append({
+            "entity": "HP:0030057",
+            "root_class_uri": hp003_root_uri,
+            "n_direct_or_descendant_instances": n_hp003_classes,  # class count
+        })
+    if hp000_root_uri is not None:
+        rows.append({
+            "entity": "HP:0000118",
+            "root_class_uri": hp000_root_uri,
+            "n_direct_or_descendant_instances": n_hp000_classes,  # class count
+        })
+
+    rows.append({
+        "entity": "LOINC_part",
+        "root_class_uri": "",
+        "n_direct_or_descendant_instances": n_loinc_parts,
+    })
+
+    out_path = out_dir / f"{base}_core_entity_counts.csv"
+    with out_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "entity",
+                "root_class_uri",
+                "n_direct_or_descendant_instances",
+            ],
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
+    # ---------- 7) Build and write provenance triples CSV ----------
+    debug_rows = []
+
+    # Target instances
+    for inst, (s, p, o) in target_inst_triples.items():
+        debug_rows.append({
+            "category": "Target_instance",
+            "root_entity": "Target",
+            "item_uri": inst,
+            "triple_subject": s,
+            "triple_predicate": p,
+            "triple_object": o,
+        })
+
+    # AutoimmuneDisease instances
+    for inst, (s, p, o) in autoimmune_inst_triples.items():
+        debug_rows.append({
+            "category": "AutoimmuneDisease_instance",
+            "root_entity": "AutoimmuneDisease",
+            "item_uri": inst,
+            "triple_subject": s,
+            "triple_predicate": p,
+            "triple_object": o,
+        })
+
+    # Autoantibody descendant classes
+    for cls, (s, p, o) in auto_desc_triples.items():
+        debug_rows.append({
+            "category": "Autoantibody_descendant_class",
+            "root_entity": "Autoantibody",
+            "item_uri": cls,
+            "triple_subject": s,
+            "triple_predicate": p,
+            "triple_object": o,
+        })
+
+    # HP:0030057 descendant classes
+    for cls, (s, p, o) in hp003_desc_triples.items():
+        debug_rows.append({
+            "category": "HP:0030057_descendant_class",
+            "root_entity": "HP:0030057",
+            "item_uri": cls,
+            "triple_subject": s,
+            "triple_predicate": p,
+            "triple_object": o,
+        })
+
+    # HP:0000118 direct child classes (after overlap filtering)
+    for cls, (s, p, o) in hp000_child_triples.items():
+        debug_rows.append({
+            "category": "HP:0000118_direct_child_class",
+            "root_entity": "HP:0000118",
+            "item_uri": cls,
+            "triple_subject": s,
+            "triple_predicate": p,
+            "triple_object": o,
+        })
+
+    # LOINC parts
+    for uri, (s, p, o) in loinc_triples.items():
+        debug_rows.append({
+            "category": "LOINC_part",
+            "root_entity": "",
+            "item_uri": uri,
+            "triple_subject": s,
+            "triple_predicate": p,
+            "triple_object": o,
+        })
+
+    debug_path = out_dir / f"{base}_core_entity_counts_triples.csv"
+    with debug_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "category",
+                "root_entity",
+                "item_uri",
+                "triple_subject",
+                "triple_predicate",
+                "triple_object",
+            ],
+        )
+        writer.writeheader()
+        writer.writerows(debug_rows)
+
+    # ---------- 8) Logs ----------
+    print(f"[CORE COUNTS] Target instances (direct+descendants): {n_target}")
+    print(
+        "[CORE COUNTS]   Target origins: "
+        f"UniProt={target_origin_counts.get('UniProt', 0)}, "
+        f"ChEBI={target_origin_counts.get('ChEBI', 0)}, "
+        f"UMLS={target_origin_counts.get('UMLS', 0)}, "
+        f"Other={target_origin_counts.get('Other', 0)}"
+    )
+
+    print(f"[CORE COUNTS] AutoimmuneDisease instances (direct+descendants): {n_autoimmune}")
+    print(
+        "[CORE COUNTS]   AutoimmuneDisease origins: "
+        f"Orphanet={autoimmune_origin_counts.get('Orphanet', 0)}, "
+        f"SNOMED={autoimmune_origin_counts.get('SNOMED', 0)}, "
+        f"UMLS={autoimmune_origin_counts.get('UMLS', 0)}, "
+        f"Other={autoimmune_origin_counts.get('Other', 0)}"
+    )
+
+    print(f"[CORE COUNTS] Autoantibody strict descendant classes: {n_auto_classes}")
+    print(f"[CORE COUNTS] HP:0030057 strict descendant classes: {n_hp003_classes}")
+    print(f"[CORE COUNTS] HP:0000118 direct child classes (after overlap removal): {n_hp000_classes}")
+    print(f"[CORE COUNTS] Unique LOINC parts: {n_loinc_parts}")
+    print(f"[CORE COUNTS] Wrote {out_path}")
+    print(f"[CORE COUNTS] Wrote debug triples to {debug_path}")
+
 
 # =====================================================================
 # 10. Main
@@ -2196,7 +2781,9 @@ if __name__ == "__main__":
     # Uncomment what you want to run
     # summarize_rdf("../kg/makg-core_v1.rdf", "../plots_and_stats/")
     # summarize_aab_targets("../kg/makg-core_v1.rdf", "../plots_and_stats/")
-    summarize_aab_leaf_stats("../kg/makg-core_v1.rdf", "../plots_and_stats/")
+    #summarize_aab_leaf_stats("../kg/makg-core_v1.rdf", "../plots_and_stats/")
+    #summarize_aab_taxonomy_nodes("../kg/makg-core_v1.rdf", "../plots_and_stats/")
+    summarize_core_entity_counts("../kg/makg-core_v1.rdf", "../plots_and_stats/")
     # summarize_aab_diseases("../kg/makg-core_v1.rdf", "../plots_and_stats/")
     # summarize_disease_aab("../kg/makg-core_v1.rdf", "../plots_and_stats/")
     # summarize_disease_instances_aab("../kg/makg-core_v1.rdf", "../plots_and_stats/")

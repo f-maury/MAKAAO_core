@@ -8,6 +8,7 @@ import sys
 from collections import Counter, defaultdict, deque
 from pathlib import Path
 from typing import Union
+import pandas as pd
 
 import matplotlib.pyplot as plt
 from matplotlib_venn import venn2
@@ -494,6 +495,160 @@ def plot_hpo_venn(
     plt.close()
     print(f"Saved Venn diagram to {out_path}")
 
+#########################################################################################
+# bar plot for aab taxonomy leaves
+
+def plot_aab_leaf_barplots(
+    csv_path: Union[str, Path],
+    out_prefix: Union[str, Path],
+    top_n: int = 30,
+) -> None:
+    """
+    Read makg-core_v1_aab_leaf_stats.csv and produce:
+      1) Barplot of top N AAB classes by number of leaf subclasses.
+      2) Barplot of the distribution of leaf-subclass counts across classes.
+
+    The class(es) with the largest number of leaves are excluded from BOTH plots
+    (typically the root Autoantibody class).
+    """
+    csv_path = Path(csv_path)
+    out_prefix = Path(out_prefix)
+    out_dir = out_prefix.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    base = out_prefix.stem
+
+    # ---- read CSV ----
+    records = []  # (label, n_leaf)
+    with csv_path.open("r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            label = (row.get("aab_label") or "").strip()
+            n_leaf_str = (row.get("n_leaf_aab_subclasses") or "").strip()
+            if not n_leaf_str:
+                continue
+            try:
+                n_leaf = int(n_leaf_str)
+            except ValueError:
+                continue
+
+            # If label is empty, fall back to local name from URI
+            if not label:
+                uri = (row.get("aab_class_uri") or "").strip()
+                if uri:
+                    label = uri.rsplit("/", 1)[-1]
+                else:
+                    label = "<?>"
+
+            records.append((label, n_leaf))
+
+    if not records:
+        print(f"No usable rows in {csv_path}")
+        return
+
+    # ---- exclude the class(es) with the largest number of leaves ----
+    max_leaves = max(n for _, n in records)
+    filtered = [(lbl, n) for (lbl, n) in records if n != max_leaves]
+
+    if not filtered:
+        print(
+            f"After excluding max-leaf classes (n={max_leaves}), no records remain; "
+            f"skipping plots."
+        )
+        return
+
+    excluded_labels = [lbl for (lbl, n) in records if n == max_leaves]
+    print(
+        f"Excluding {len(excluded_labels)} class(es) with max leaves = {max_leaves}: "
+        + ", ".join(excluded_labels)
+    )
+
+    # ------------------------------------------------------------------
+    # 1) Top-N barplot (classes with most leaf subclasses), on FILTERED
+    # ------------------------------------------------------------------
+    records_sorted = sorted(filtered, key=lambda x: (-x[1], x[0]))[:top_n]
+    labels = [lbl for lbl, _ in records_sorted]
+    counts = [n for _, n in records_sorted]
+
+    plt.figure(figsize=(10, 6))
+    bars = plt.bar(range(len(labels)), counts)
+    plt.xticks(range(len(labels)), labels, rotation=45, ha="right")
+    plt.ylabel("Number of leaf AAB subclasses")
+    plt.title(
+        f"Top {len(labels)} AAB classes by number of leaf subclasses\n"
+        f"(excluding max-leaf class(es))"
+    )
+
+    # grid on y-axis
+    ax = plt.gca()
+    ax.set_axisbelow(True)
+    plt.grid(axis="y", linestyle="--", linewidth=0.5)
+
+    # value labels above each bar (for number of leaves)
+    for i, val in enumerate(counts):
+        plt.text(
+            i,
+            val,
+            str(val),
+            ha="center",
+            va="bottom",
+            fontsize=8,
+        )
+
+    plt.tight_layout()
+    plt.savefig(out_dir / f"{base}_top_leaf_aab_classes.png", dpi=150)
+    plt.close()
+
+    # ------------------------------------------------------------------
+    # 2) Distribution of n_leaf_aab_subclasses, on the SAME FILTERED SET
+    # ------------------------------------------------------------------
+    all_counts = [n for _, n in filtered]
+    max_n = max(all_counts)
+
+    # Define bins: either fine-grained if small max, or coarse if large max
+    if max_n <= 20:
+        bins = [(i, i) for i in range(0, max_n + 1)]
+    else:
+        bins = [
+            (0, 0),
+            (1, 1),
+            (2, 5),
+            (6, 10),
+            (11, 20),
+            (21, max_n),
+        ]
+
+    bin_labels = []
+    bin_values = []
+    for lo, hi in bins:
+        if lo == hi:
+            label = f"{lo}"
+        elif hi == max_n and hi > lo:
+            label = f"{lo}–{hi}" if hi <= 50 else f"{lo}+"
+        else:
+            label = f"{lo}–{hi}"
+        cnt = sum(1 for v in all_counts if lo <= v <= hi)
+        bin_labels.append(label)
+        bin_values.append(cnt)
+
+    plt.figure(figsize=(8, 5))
+    plt.bar(range(len(bin_labels)), bin_values)
+    plt.xticks(range(len(bin_labels)), bin_labels, rotation=0, ha="center")
+    plt.ylabel("Number of AAB classes")
+    plt.xlabel("Number of leaf AAB subclasses")
+    plt.title(
+        "Distribution of leaf-subclass counts across AAB classes\n"
+        "(excluding max-leaf class(es))"
+    )
+
+    ax = plt.gca()
+    ax.set_axisbelow(True)
+    plt.grid(axis="y", linestyle="--", linewidth=0.5)
+
+    plt.tight_layout()
+    plt.savefig(out_dir / f"{base}_leaf_aab_distribution.png", dpi=150)
+    plt.close()
+
+
 
 # ---------------------------------------------------------------------------
 # Main orchestration
@@ -507,6 +662,12 @@ def main():
         top_n_keywords=20,
         enrichment_csv_path="../plots_and_stats/makg-core_v1_go_enrichment_gprofiler.csv",
         top_n_go_pvals=25,
+    )
+
+    plot_aab_leaf_barplots(
+        csv_path="../plots_and_stats/makg-core_v1_aab_leaf_stats.csv",
+        out_prefix="../plots_and_stats/makg-core_v1_aab_leaf",
+        top_n=30,  # adjust as you like
     )
 
     write_descendants_csv(

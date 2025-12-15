@@ -1,8 +1,8 @@
 [![66.67 % FAIR](https://img.shields.io/badge/FAIR_assessment-66.67_%25-orange)](https://fair-checker.france-bioinformatique.fr/assessment/6841584a442568dc9750d7a7) ![Version](https://img.shields.io/badge/version-1.0.0-blue) 
 
-# ⚠️ DISCLAIMER: Work in progress ⚠️
-
 # MAKAAO knowledge graph
+
+## ⚠️ DISCLAIMER: Work in progress ⚠️
 
 ## Installation
 
