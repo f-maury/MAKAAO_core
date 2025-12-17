@@ -9,10 +9,12 @@ from rdflib.namespace import XSD
 from datetime import datetime, timezone, date
 
 # ===================== CONFIG =====================
+
+version = "1.0.0"
 BASE_DIR   = "../data/processed_tables/"
 OUTPUT_DIR = "../data/"
 makaao_core_name = "../data/makaao_core.csv"
-OUTPUT_OWL_ENRICHED = "../kg/makg-core_v1.rdf"
+OUTPUT_OWL_ENRICHED = f"../kg/makg-core_{version}.rdf"
 
 # Optional enrichment tables (all CSVs). Script tolerates their absence.
 UMLS_HPO_CSV       = "../data/enrichment_tables/umls_hpo.csv"
@@ -43,7 +45,7 @@ VOID    = Namespace("http://rdfs.org/ns/void#")
 FOAF    = Namespace("http://xmlns.com/foaf/0.1/")
 
 # ===================== GLOBALS =====================
-relation_counter = 1
+relation_counter = 0
 document_map = {}
 GLOBAL_ACTIVITY = None
 
@@ -372,8 +374,8 @@ def init_graph(): # start an empty knowledge graph and add a few basic things to
     onto = URIRef("http://makaao.inria.fr/kg/")
     g.add((onto, RDF.type, OWL.Ontology))
     add_pref(g, onto, "MAKAAO knowledge graph")
-    g.add((onto, OWL.versionIRI, URIRef("http://makaao.inria.fr/kg/1.0")))
-    g.add((onto, OWL.versionInfo, Literal("1.0")))
+    g.add((onto, OWL.versionIRI, URIRef(f"http://makaao.inria.fr/kg/{version}")))
+    g.add((onto, OWL.versionInfo, Literal(version)))
 
     # we manually define the main classes
     g.add((MAKAAO.Relation, RDF.type, OWL.Class))
@@ -382,7 +384,7 @@ def init_graph(): # start an empty knowledge graph and add a few basic things to
     g.add((MAKAAO.Document, RDFS.subClassOf, PROV.Entity)) # sublass of PROV Entity, used for reified relations that carry provenance information
     g.add((MAKAAO.Autoantibody, RDF.type, OWL.Class))
     g.add((MAKAAO.AutoimmuneDisease, RDF.type, OWL.Class))
-    g.add((MAKAAO.Autoantibody, SKOS.closeMatch, URIRef("http://snomed.info/id/30621004"))) # we define a closeMatch between our Autoantibody class and the corresponding one in SNOMED
+    #g.add((MAKAAO.Autoantibody, SKOS.closeMatch, URIRef("http://snomed.info/id/30621004"))) # we define a closeMatch between our Autoantibody class and the corresponding one in SNOMED
     g.add((MAKAAO.Target, RDF.type, OWL.Class))
 
     # Object properties we will use
@@ -398,10 +400,10 @@ def init_graph(): # start an empty knowledge graph and add a few basic things to
     global GLOBAL_ACTIVITY
     act = MAKAAO["activity_makaao_core"]
     g.add((act, RDF.type, PROV.Activity))
-    add_pref(g, act, "MAKAAO Core Processing Activity")
+    add_pref(g, act, "MAKAAO Core processing activity")
     agent = MAKAAO["agent_makaao_core_processing_py"] # prov:SoftwareAgent
     g.add((agent, RDF.type, PROV.SoftwareAgent))
-    add_pref(g, agent, "makaao_kg_builder.py")
+    add_pref(g, agent, "03_build_kg_from_tables.py")
     g.add((act, PROV.wasAssociatedWith, agent)) # the makaao_processing_script.py (the script you are reading now, to be renamed) is associated with the MAKAAO processing acivity
     GLOBAL_ACTIVITY = act
     return g # returned initialized KG
@@ -432,18 +434,6 @@ def load_processed_tables(base_dir):
 
     name_en_map = read_one_map(name_en, "index", "name_en") # dict: {aab_id: name_en}
     KEEP = set(name_en_map.keys()) # indices that we will not filter out (non-empty rows)
-
-    '''
-    # can we remove this? we are not using name_fr anymore !!!
-    name_fr_map = {}
-    for r in name_fr:
-        idx = (r.get("index") or "").strip()
-        if idx not in KEEP: continue
-        nm  = (r.get("name_fr") or "").strip()
-        src = (r.get("name_fr_source") or "").strip()
-        if nm:
-            name_fr_map[idx] = (nm, src) # dict: {aab_id: [name_fr, source]}
-    '''
 
     syn_en_map = defaultdict(list) # dict: {aab_id: [(syn_en, source), ...]}
     for r in syn_en:
@@ -809,23 +799,6 @@ def process_diseases(g, data, umls_orphanet_by_cui, umls_orphanet_by_code,
                     add_label(g, cui_uri, RDFS.label, n)
                 add_label(g, cui_uri, RDFS.label, code_norm)
 
-                ''' # this is un-necessary, and does not even add closeMatches between UMLS codes and SNOMED codes, so we disable it for now
-                rows = umls_snomed_by_cui.get(code_norm) # read row with current CUI in the CUI-SNOMED table
-                if rows:
-                    primary = next((r.get("STR") for r in rows if (r.get("TTY") or "").upper() == "PT"), None)
-                    snomed_id = next((r.get("CODE") for r in rows if r.get("CODE")), None)
-                    if snomed_id:
-                        sid = make_valid(snomed_id)
-                        d_cls = URIRef(f"http://snomed.info/id/{sid}") # if there is a snomed ocde on the row, we create and instantiate a corresponding SNOMED class in our KG
-                        g.add((d_cls, RDF.type, OWL.Class))
-                        g.add((d_cls, RDFS.subClassOf, URIRef("http://snomed.info/id/404684003")))
-                        g.add((d_cls, RDFS.subClassOf, MAKAAO.AutoimmuneDisease))
-                        if primary: add_pref(g, d_cls, primary)
-                        sn_inst = MAKAAO[f"snomed_{sid}_instance"]
-                        g.add((sn_inst, RDF.type, d_cls))
-                        inst = sn_inst
-                '''
-
             # last case, if code is not a properly formatted orpha or CUI code, we just create a generic UMLS instance with the code as label
             else:
                 code_norm = code_upper.replace("CUI:", "").strip()
@@ -883,19 +856,19 @@ def append_fair_metadata(kg: Graph):
     kg.add((ONT, RDF.type, VOID.Dataset))
 
     kg.add((ONT, DCTERMS.identifier, ONT))
-    kg.add((ONT, DCTERMS.title, Literal("Makaao Core Knowledge Graph", lang="en")))
+    kg.add((ONT, DCTERMS.title, Literal("MAKAAO Knowledge Graph", lang="en")))
     kg.add((ONT, DCTERMS.description, Literal(
         "A FAIR-compliant RDF knowledge graph about autoantibodies, and autoimmune diseases", lang="en")))
 
-    for term in ["RDF", "Knowledge Graph", "Autoantibodies", "Biomedical Ontology", "Autoimmune diseases"]:
+    for term in ["Knowledge Graph", "Autoantibodies", "Biomedical Ontology", "Autoimmune diseases"]:
         kg.add((ONT, DCTERMS.subject, Literal(term, lang="en")))
 
-    kg.add((ONT, DCTERMS.license, URIRef("https://spdx.org/licenses/MIT.html")))
+    kg.add((ONT, DCTERMS.license, URIRef("https://creativecommons.org/licenses/by/4.0/")))
     kg.add((ONT, DCTERMS.accessRights, Literal("Open access")))
     kg.add((ONT, ODRL.hasPolicy, URIRef("https://makaao.inria.fr/usage_policies.html")))
 
-    kg.add((ONT, DCAT.downloadURL, URIRef("https://makaao.inria.fr/data/makaao_v1.rdf")))
-    kg.add((ONT, DCAT.endpointURL, URIRef("https://makaao.inria.fr/virtuoso/sparql")))
+    kg.add((ONT, DCAT.downloadURL, URIRef(f"https://makaao.inria.fr/data/makaao_{version}.rdf")))
+    kg.add((ONT, DCAT.endpointURL, URIRef("http://makaao.inria.fr/kg/")))
     kg.add((ONT, DCAT.mediaType, Literal("application/rdf+xml")))
     kg.add((ONT, DCAT.landingPage, URIRef("https://makaao.inria.fr/")))
 
@@ -919,20 +892,18 @@ def append_fair_metadata(kg: Graph):
         add_pref(kg, team_uri, team_label)
 
     kg.add((ONT, DCTERMS.created, Literal(date.today().isoformat(), datatype=XSD.date)))
-    kg.add((ONT, OWL.versionInfo, Literal("1.0")))
+    kg.add((ONT, OWL.versionInfo, Literal(version)))
     kg.add((ONT, OWL.imports, URIRef("http://purl.obolibrary.org/obo/ro.owl")))
     kg.add((ONT, VOID.triples, Literal(len(kg), datatype=XSD.integer)))
     kg.add((ONT, VOID.uriSpace, Literal("http://makaao.inria.fr/kg/")))
-    kg.add((ONT, SCHEMA.name, Literal("Makaao Knowledge Graph", lang="en")))
-    kg.add((ONT, SCHEMA.description, Literal(
-        "A biomedical knowledge graph for autoantibody research. "
-        "Fully FAIR-compliant, exposing data via SPARQL endpoint and RDF dumps.", lang="en")))
+    kg.add((ONT, SCHEMA.name, Literal("MAKAAO Knowledge Graph", lang="en")))
+    kg.add((ONT, SCHEMA.description, Literal("A knowledge graph for autoantibodies", lang="en")))
     kg.add((ONT, SCHEMA.url, URIRef("http://makaao.inria.fr/kg/")))
     kg.add((ONT, SCHEMA.license, URIRef("https://creativecommons.org/licenses/by/4.0/")))
-    kg.add((ONT, RDFS.seeAlso, URIRef("https://hpo.jax.org/")))
-    for kw in ["FAIR", "SPARQL", "Open Data"]:
+    kg.add((ONT, RDFS.seeAlso, URIRef("https://makaao.inria.fr")))
+    for kw in ["Autoantibodies", "Autoimmune diseases"]:
         kg.add((ONT, DCAT.keyword, Literal(kw, lang="en")))
-    kg.add((ONT, DCAT.contactPoint, URIRef("mailto:fabien.maury@inria.fr")))
+    kg.add((ONT, DCAT.contactPoint, URIRef("mailto:contact.makaao@inria.fr")))
 
 # ===================== MAIN =====================
 def main():
