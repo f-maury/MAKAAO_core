@@ -37,7 +37,7 @@ HP = Namespace("http://purl.obolibrary.org/obo/")
 BIOLINK = Namespace("https://w3id.org/biolink/vocab/")
 BAO = Namespace("http://www.bioassayontology.org/bao#")
 SIO = Namespace("http://semanticscience.org/resource/")
-UMLS = "https://uts.nlm.nih.gov/uts/umls/concept/"
+UMLS = Namespace("http://uts.nlm.nih.gov/uts/umls/concept/")
 
 DCTERMS = Namespace("http://purl.org/dc/terms/")
 DCAT = Namespace("http://www.w3.org/ns/dcat#")
@@ -758,6 +758,7 @@ def build_core(
         if not pos_list:  # if there is no HPO positivity, we create a generic positivity class for that AAb
             pos_uri = MAKAAO[f"positivity_{idx}"]
             add_pref(g, pos_uri, primary_labels[idx] + " positivity")
+            g.add((pos_uri, RDF.type, OWL.Class))
             pos_list.append((pos_uri, primary_labels[idx] + " positivity"))
 
         pos_uris_by_idx[idx] = [
@@ -809,9 +810,7 @@ def build_core(
             cui_uri = URIRef(
                 MAKAAO + cui_key + "_instance"
             )  # we create the URI of the CUI instanceS
-            g.add(
-                (cui_uri, RDF.type, MAKAAO.Target)
-            )  # we create a instance of the Target class with the relevant CUI as URI
+            g.add((cui_uri, OBO.xref, UMLS[cui_key])) # we create a instance of the Target class with the relevant CUI as URI
             all_umls_labels = (
                 umls_names.get(cui_key) or []
             )  # we read from umls_names table all the names associated to that CUI
@@ -875,8 +874,8 @@ def build_core(
             )  # else, we try to get the url of the uniprot protein from code_names table
             if up_url:
                 g.add(
-                    (prot_ind, RDFS.seeAlso, URIRef(up_url))
-                )  # we add seeAlso relation if we find a url (the real uniprot URI)
+                    (prot_ind, OBO.xref, URIRef(up_url))
+                )  # we add xref relation if we find a url (the real uniprot URI)
             g.add((inst_aab, BAO.BAO_0000211, prot_ind))
             g.add(
                 (prot_ind, BAO.BAO_0000598, inst_aab)
@@ -1235,7 +1234,7 @@ def append_fair_metadata(kg: Graph):
     for kw in ["Autoantibodies", "Autoimmune diseases"]:
         kg.add((ONT, DCAT.keyword, Literal(kw, lang="en")))
     kg.add((ONT, DCAT.contactPoint, URIRef("mailto:contact.makaao@inria.fr")))
-    kg.add((ONT, VOID.triples, Literal(len(kg), datatype=XSD.integer)))
+    kg.add((ONT, VOID.triples, Literal(len(kg)+1, datatype=XSD.integer)))
 
 
 # ===================== MAIN =====================
