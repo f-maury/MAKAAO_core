@@ -377,9 +377,7 @@ def add_reified_relation(g, subj, pred, obj, prov_str):
         ]  # otherwise we create a new instance of Document, and we construct its URI based on the number of documents already known
         document_map[prov] = doc  # we add that new document to the document map
         g.add((doc, RDF.type, MAKAAO.Document))
-        add_label(
-            g, doc, RDFS.label, prov
-        )  # the label of the docment is its provenance URI
+        add_label(g, doc, RDFS.label, prov)  # the label of the docment is its provenance URI
 
     # check if the object of the relations is an individual or a literal, so we characterize it correctly
     obj_node = obj if isinstance(obj, (URIRef, BNode, Literal)) else Literal(obj)
@@ -475,26 +473,34 @@ def init_graph():  # start an empty knowledge graph and add a few basic things t
 
     # we manually define the main classes
     g.add((MAKAAO.Relation, RDF.type, OWL.Class))
-    g.add(
-        (MAKAAO.Relation, RDFS.subClassOf, PROV.Entity)
-    )  # sublass of PROV Entity, used for reified relations that carry provenance information
+    g.add((MAKAAO.Relation, RDFS.subClassOf, PROV.Entity))  # sublass of PROV Entity, used for reified relations that carry provenance information
+    g.add((MAKAAO.Relation, RDFS.label, Literal("Relation")))
+    g.add((MAKAAO.Document, RDFS.label, Literal("Document")))
     g.add((MAKAAO.Document, RDF.type, OWL.Class))
-    g.add(
-        (MAKAAO.Document, RDFS.subClassOf, PROV.Entity)
-    )  # sublass of PROV Entity, used for reified relations that carry provenance information
+    g.add((MAKAAO.Document, RDFS.subClassOf, PROV.Entity))  # sublass of PROV Entity, used for reified relations that carry provenance information
     g.add((MAKAAO.Autoantibody, RDF.type, OWL.Class))
+    g.add((MAKAAO.Autoantibody, RDFS.label, Literal("Autoantibody")))
     g.add((MAKAAO.AutoimmuneDisease, RDF.type, OWL.Class))
+    g.add((MAKAAO.AutoimmuneDisease, RDFS.label, Literal("Autoimmune disease")))
     # g.add((MAKAAO.Autoantibody, SKOS.closeMatch, URIRef("http://snomed.info/id/30621004"))) # we define a closeMatch between our Autoantibody class and the corresponding one in SNOMED
     g.add((MAKAAO.Target, RDF.type, OWL.Class))
+    g.add((MAKAAO.Target, RDFS.label, Literal("Target")))
 
     # Object properties we will use
     g.add((BAO.BAO_0000211, RDF.type, OWL.ObjectProperty))  # has_target
+    g.add((BAO.BAO_0000211, RDFS.label, Literal("has target")))
     g.add((BAO.BAO_0000598, RDF.type, OWL.ObjectProperty))  # is_target_of
+    g.add((BAO.BAO_0000598, RDFS.label, Literal("is target of")))
     g.add((SIO["SIO_001279"], RDF.type, OWL.ObjectProperty))  # has_phenotype
+    g.add((SIO["SIO_001279"], RDFS.label, Literal("has phenotype")))
     g.add((SIO["SIO_001280"], RDF.type, OWL.ObjectProperty))  # is_phenotype_of
+    g.add((SIO["SIO_001280"], RDFS.label, Literal("is phenotype of")))
     g.add((SIO["SIO_001403"], RDF.type, OWL.ObjectProperty))  # is_associated_with
+    g.add((SIO["SIO_001403"], RDFS.label, Literal("is associated with")))
     g.add((BIOLINK.has_biomarker, RDF.type, OWL.ObjectProperty))  # has_biomarker
+    g.add((BIOLINK.has_biomarker, RDFS.label, Literal("has biomarker")))
     g.add((BIOLINK.biomarker_for, RDF.type, OWL.ObjectProperty))  # biomarker_for
+    g.add((BIOLINK.biomarker_for, RDFS.label, Literal("biomarker for")))
 
     # Global PROV activity
     global GLOBAL_ACTIVITY
@@ -786,6 +792,9 @@ def build_core(
                     g.add(
                         (c_uri, RDFS.subClassOf, p_uri)
                     )  # we make the subsumption link between the child and parent positivity URIs
+                    g.add(
+                        (c_uri, RDF.type, p_uri)
+                    ) 
 
     # UMLS targets
     umls_local_names = umls_cn_names or {}  # umls_names from code_names table
@@ -798,7 +807,7 @@ def build_core(
                 "CUI:", ""
             )  # for each CUI associated to this aab_id
             cui_uri = URIRef(
-                UMLS + cui_key + "_instance"
+                MAKAAO + cui_key + "_instance"
             )  # we create the URI of the CUI instanceS
             g.add(
                 (cui_uri, RDF.type, MAKAAO.Target)
@@ -1209,7 +1218,6 @@ def append_fair_metadata(kg: Graph):
     kg.add((ONT, DCTERMS.created, Literal(date.today().isoformat(), datatype=XSD.date)))
     kg.add((ONT, OWL.versionInfo, Literal(version)))
     kg.add((ONT, OWL.imports, URIRef("http://purl.obolibrary.org/obo/ro.owl")))
-    kg.add((ONT, VOID.triples, Literal(len(kg), datatype=XSD.integer)))
     kg.add((ONT, VOID.uriSpace, Literal("http://makaao.inria.fr/kg/")))
     kg.add((ONT, SCHEMA.name, Literal("MAKAAO Knowledge Graph", lang="en")))
     kg.add(
@@ -1227,6 +1235,7 @@ def append_fair_metadata(kg: Graph):
     for kw in ["Autoantibodies", "Autoimmune diseases"]:
         kg.add((ONT, DCAT.keyword, Literal(kw, lang="en")))
     kg.add((ONT, DCAT.contactPoint, URIRef("mailto:contact.makaao@inria.fr")))
+    kg.add((ONT, VOID.triples, Literal(len(kg), datatype=XSD.integer)))
 
 
 # ===================== MAIN =====================
