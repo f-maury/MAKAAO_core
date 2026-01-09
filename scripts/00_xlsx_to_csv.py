@@ -1,7 +1,7 @@
 import pandas as pd
-import csv, re
+import csv
+import re
 from pathlib import Path
-from math import isnan
 
 # ---------- CONFIG ----------
 INPUT_XLSX = "../data/makaao_core.xlsx"   # path to the Excel file
