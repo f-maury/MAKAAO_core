@@ -337,6 +337,24 @@ def read_code_names_umls(path):
 
     return id2name, id2url  # 2 dicts: CUI -> name, CUI -> url
 
+def read_code_names_orpha(path):
+    id2name, id2url = {}, {}
+    rows = read_csv_rows(path)
+    for r in rows:
+        src = (r.get("source") or "").strip().lower()
+        if "orpha" not in src and src != "che":
+            continue
+        raw = (r.get("id") or "").strip()
+        nm = (r.get("name") or "").strip()
+        url = (r.get("url") or "").strip()
+        code_colon = raw.strip()
+        if nm and code_colon and code_colon not in id2name:
+            id2name[code_colon] = nm
+        if url and code_colon and code_colon not in id2url:
+            id2url[code_colon] = url
+
+    return id2name, id2url
+
 
 def read_code_names_chebi(path):
     id2name, id2url = {}, {}
@@ -793,9 +811,7 @@ def build_core(
                     g.add(
                         (c_uri, RDFS.subClassOf, p_uri)
                     )  # we make the subsumption link between the child and parent positivity URIs
-                    g.add(
-                        (c_uri, RDF.type, p_uri)
-                    ) 
+                    
 
     # UMLS targets
     umls_local_names = umls_cn_names or {}  # umls_names from code_names table
@@ -960,6 +976,8 @@ def process_diseases(
             if code_norm:
                 positivity_codes.add(code_norm)
 
+    orpha_cn_names, orpha_cn_urls = read_code_names_orpha(CODE_NAMES_CSV)
+
     for idx, items in data["diseases"].items():
         aab_inst = MAKAAO[f"aab_{idx}_instance"]
         for (
@@ -1000,6 +1018,11 @@ def process_diseases(
                     f"orpha_{orpha_num}_instance"
                 ]  # also add instance of Orphanet class
                 g.add((inst, RDF.type, d_cls))
+                try:
+                    g.add((inst, RDFS.label, Literal(orpha_cn_names[orpha_num])))
+                except Exception as e:
+                    print("Error adding Orpha code name:", e)
+
 
                 # Use the ORDO URI string (same as keys in orpha_hpo_links)
                 for link in orpha_hpo_links.get(str(d_cls), []):
@@ -1018,9 +1041,9 @@ def process_diseases(
                         pos_uri = URIRef(hpo_id_raw)
                     else:
                         code_norm = hpo_id_raw.strip().upper().replace("_", ":")
-                        pos_uri = hp_to_obo_uri(code_norm + "_instance")
+                        pos_uri = hp_to_obo_uri(code_norm)
 
-                    if pos_uri is None or pos_uri == "_instance":
+                    if pos_uri is None:
                         continue
 
                     # Add subclass of HP:0000118 for "regular" phenotypic abnormalities,
@@ -1034,9 +1057,17 @@ def process_diseases(
                         add_pref(g, pos_uri, term)
 
                     # Instance and phenotype links
-                    pos_inst = MAKAAO[
-                        f"{make_valid(str(pos_uri).split('/')[-1])}_instance"
-                    ]
+###########################################################
+                    all_hpo_in_core = data["hpo_list"].values()
+                    all_hpo_in_core = list(set([item.upper() for sublist in all_hpo_in_core for item in sublist]))
+                    
+                    if code_norm.upper() in all_hpo_in_core:
+                        key = next((k for k, v in data["hpo_list"].items() if v == code_norm.upper()), None)
+                        print("ok")
+                        pos_inst = URIRef(MAKAAO[f"positivity_{key}_instance"])
+#########################################################
+                    else:
+                        pos_inst = MAKAAO[f"{make_valid(str(pos_uri).split('/')[-1])}_instance"]
                     g.add((pos_inst, RDF.type, pos_uri))
                     g.add((inst, SIO["SIO_001279"], pos_inst))  # has_phenotype
                     g.add((pos_inst, SIO["SIO_001280"], inst))  # is_phenotype_of
@@ -1303,6 +1334,7 @@ def main():
 
     # "data" is a dict where keys are column names, and values are also dict containing: different things, but they keys is alwaus aab_id. the values might be a list containing for ex [target,source]
     data = load_processed_tables(BASE_DIR)
+    print(data['hpo_list'])
     print("indices kept:", len(data["indices"]))
     if not data["indices"]:
         en = read_csv_rows(os.path.join(BASE_DIR, "index_name_en.csv"))
