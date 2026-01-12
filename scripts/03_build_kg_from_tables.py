@@ -826,6 +826,7 @@ def build_core(
             cui_uri = URIRef(
                 MAKAAO + cui_key + "_instance"
             )  # we create the URI of the CUI instanceS
+            g.add((cui_uri, RDF.type, MAKAAO.Target))
             g.add((cui_uri, OBO.xref, UMLS[cui_key])) # we create a instance of the Target class with the relevant CUI as URI
             all_umls_labels = (
                 umls_names.get(cui_key) or []
@@ -873,6 +874,9 @@ def build_core(
             ]  # we create the URI of the uniprot protein instance
             g.add(
                 (prot_ind, RDF.type, URIRef("http://purl.uniprot.org/core/Protein"))
+            )
+            g.add(
+                (prot_ind, RDF.type, MAKAAO.Target)
             )  # we declare it as an instance of uniprot protein class
             up_name = up_names.get(base) or up_names.get(
                 norm
@@ -1058,19 +1062,35 @@ def process_diseases(
 
                     # Instance and phenotype links
 ###########################################################
-                    all_hpo_in_core = data["hpo_list"].values()
-                    all_hpo_in_core = list(set([item.upper() for sublist in all_hpo_in_core for item in sublist]))
+                    # code_norm : normalized code HP:xxx of phenotype linked to Orpha disease
+                    # before adding an instance of that HP_xxx class linked to the orpha disease, 
+                    # we need to check that HP_xxx class is not already used as positivity phenotype for an AAb
                     
-                    if code_norm.upper() in all_hpo_in_core:
-                        key = next((k for k, v in data["hpo_list"].items() if v == code_norm.upper()), None)
-                        print("ok")
-                        pos_inst = URIRef(MAKAAO[f"positivity_{key}_instance"])
+                    target_code = code_norm.strip().upper()
+                    
+                    # Search for the key where the target_code exists inside the list of values (v_list)
+                    key = next(
+                        (
+                            k for k, v_list in data["hpo_list"].items() 
+                            if target_code in [str(x).strip().upper() for x in v_list]
+                        ), 
+                        None
+                    )
+
+                    if key is not None:
+                        pos_inst = next((s for s in g.subjects(BIOLINK.has_biomarker, MAKAAO[f"aab_{key}_instance"]) if (s, RDF.type, pos_uri) in g), URIRef(MAKAAO[f"positivity_{key}_instance"]),)
+                    # this will create positivity_{key}_instance if not found in the graph yet, if the an AAb has several, we take care of that too
 #########################################################
-                    else:
+                    elif key == None:
                         pos_inst = MAKAAO[f"{make_valid(str(pos_uri).split('/')[-1])}_instance"]
+                    if key != None:
+                        print(key)
                     g.add((pos_inst, RDF.type, pos_uri))
                     g.add((inst, SIO["SIO_001279"], pos_inst))  # has_phenotype
                     g.add((pos_inst, SIO["SIO_001280"], inst))  # is_phenotype_of
+                    class_label = g.value(pos_uri, RDFS.label) or g.value(pos_uri, SKOS.prefLabel)
+                    if class_label:
+                        g.add((pos_inst, RDFS.label, class_label))
                     add_reified_relation(
                         g,
                         inst,
@@ -1307,7 +1327,7 @@ def main():
         if os.path.exists(ORPHANET_HPO_LINKS)
         else {}
     )
-    print(orpha_hpo_links)
+    #print(orpha_hpo_links)
 
     # Names read from code_names.csv: a file obtained by querying UMLS for english names of our concepts of interest (targets, diseases...)
     if os.path.exists(CODE_NAMES_CSV):
@@ -1334,7 +1354,7 @@ def main():
 
     # "data" is a dict where keys are column names, and values are also dict containing: different things, but they keys is alwaus aab_id. the values might be a list containing for ex [target,source]
     data = load_processed_tables(BASE_DIR)
-    print(data['hpo_list'])
+    #print(data['hpo_list'])
     print("indices kept:", len(data["indices"]))
     if not data["indices"]:
         en = read_csv_rows(os.path.join(BASE_DIR, "index_name_en.csv"))
