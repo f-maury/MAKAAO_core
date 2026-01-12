@@ -687,8 +687,9 @@ def build_core(
     g.add((chebi_root, RDFS.subClassOf, MAKAAO.Target))
 
     # Declare makaao_core CSV as a Document used by the Activity
-    csv_doc = MAKAAO["document_makaao_core_csv"]
+    csv_doc = MAKAAO["makaao_core.csv"]
     g.add((csv_doc, RDF.type, MAKAAO.Document))
+    g.add((csv_doc, RDFS.seeAlso, URIRef("https://makaao.inria.fr/data/makaao_core.csv")))
     add_pref(g, csv_doc, os.path.basename(makaao_core_name))
     g.add((GLOBAL_ACTIVITY, PROV.used, csv_doc))
 
@@ -931,6 +932,9 @@ def build_core(
             g.add(
                 (chebi_ind, RDF.type, chebi_cls)
             )  # we create an instance of the chebi class with the relevant URI
+            g.add(
+                (chebi_ind, RDF.type, MAKAAO.Target)
+            )
             chebi_name = (chebi_cn_names or {}).get(code_colon)
             if chebi_name:  # if we find a name for that chebi id from code_names table, we add it as prefLabel and rdfs:label
                 add_pref(g, chebi_ind, chebi_name)
