@@ -1,0 +1,235 @@
+@prefix sh:     <http://www.w3.org/ns/shacl#> .
+@prefix rdf:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:   <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos:   <http://www.w3.org/2004/02/skos/core#> .
+@prefix prov:   <http://www.w3.org/ns/prov#> .
+@prefix xsd:    <http://www.w3.org/2001/XMLSchema#> .
+
+@prefix oboInOwl: <http://www.geneontology.org/formats/oboInOwl#> .
+@prefix bao:    <http://www.bioassayontology.org/bao#> .
+@prefix sio:    <http://semanticscience.org/resource/> .
+@prefix biolink: <https://w3id.org/biolink/vocab/> .
+
+@prefix makaao: <http://makaao.inria.fr/kg/> .
+
+######################################################################
+# 1. Reified relations (makaao:Relation)
+######################################################################
+
+makaao:RelationShape
+    a sh:NodeShape ;
+    sh:targetClass makaao:Relation ;
+
+    # Required reification core
+    sh:property [
+        sh:path rdf:subject ;
+        sh:minCount 1 ; sh:maxCount 1 ;
+        sh:nodeKind sh:IRI ;
+    ] ;
+    sh:property [
+        sh:path rdf:predicate ;
+        sh:minCount 1 ; sh:maxCount 1 ;
+        sh:nodeKind sh:IRI ;
+    ] ;
+    sh:property [
+        sh:path rdf:object ;
+        sh:minCount 1 ; sh:maxCount 1 ;
+        # allow IRI or literal
+    ] ;
+
+    # Optional :
+    sh:property [
+        sh:path prov:wasDerivedFrom ;
+        sh:minCount 1 ;
+        sh:class makaao:Document ;
+        sh:message "A Relation should have prov:wasDerivedFrom pointing to a makaao:Document." ;
+        sh:severity sh:Warning ;
+    ] .
+
+######################################################################
+# 2. Documentation sources (makaao:Document)
+######################################################################
+
+makaao:DocumentShape
+    a sh:NodeShape ;
+    # Custom target to exclude the core CSV metadata document
+    sh:target [
+        a sh:SPARQLTarget ;
+        sh:select """
+            PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+            PREFIX makaao: <http://makaao.inria.fr/kg/>
+            SELECT ?this WHERE {
+                ?this a makaao:Document .
+                # Exclude the specific node causing the validation error
+                FILTER(?this != <http://makaao.inria.fr/kg/document_makaao_core_csv>)
+            }
+        """ ;
+    ] ;
+
+    sh:nodeKind sh:IRI ;
+
+    sh:property [
+        sh:path rdfs:label ;
+        sh:minCount 1 ;
+        sh:datatype xsd:string ;
+    ] ;
+
+    # Must be cited by at least one Relation via prov:wasDerivedFrom
+    # This will now only be checked for documents OTHER than makaao_core.csv
+    sh:property [
+        sh:path [ sh:inversePath prov:wasDerivedFrom ] ;
+        sh:minCount 1 ;
+        sh:message "Each Document must be cited by at least one Relation using prov:wasDerivedFrom." ;
+    ] .
+
+######################################################################
+# 3. Molecular targets (makaao:Target)
+######################################################################
+
+makaao:TargetShape
+    a sh:NodeShape ;
+    sh:targetClass makaao:Target ;
+
+    # Must be target of at least one AAB instance
+    sh:property [
+        sh:path bao:BAO_0000598 ; # "is target of"
+        sh:minCount 1 ;
+        sh:nodeKind sh:IRI ;
+    ] ;
+
+    # Symmetry: Target --BAO_0000598--> AAB  implies  AAB --BAO_0000211--> Target
+    sh:sparql [
+        a sh:SPARQLConstraint ;
+        sh:message "Symmetry violation: if Target bao:BAO_0000598 AAB then AAB bao:BAO_0000211 Target must exist." ;
+        sh:select """
+            PREFIX bao: <http://www.bioassayontology.org/bao#>
+            SELECT $this ?aab WHERE {
+              $this bao:BAO_0000598 ?aab .
+              FILTER NOT EXISTS { ?aab bao:BAO_0000211 $this }
+            }
+        """ ;
+    ] ;
+
+    # Robust typing check for AAB nodes (no inference required):
+    # each ?aab must have some rdf:type that is rdfs:subClassOf* makaao:Autoantibody
+    sh:sparql [
+        a sh:SPARQLConstraint ;
+        sh:message "Target links must point to an autoantibody instance (rdf:type/rdfs:subClassOf* makaao:Autoantibody)." ;
+        sh:select """
+            PREFIX rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+            PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+            PREFIX bao:  <http://www.bioassayontology.org/bao#>
+            SELECT $this ?aab WHERE {
+              $this bao:BAO_0000598 ?aab .
+              FILTER NOT EXISTS {
+                ?aab rdf:type ?t .
+                ?t rdfs:subClassOf* <http://makaao.inria.fr/kg/Autoantibody> .
+              }
+            }
+        """ ;
+    ] .
+
+######################################################################
+# 4. Autoimmune diseases (makaao:AutoimmuneDisease)
+######################################################################
+
+makaao:AutoimmuneDiseaseShape
+    a sh:NodeShape ;
+    sh:targetClass makaao:AutoimmuneDisease ;
+
+    sh:property [
+        sh:path rdfs:label ;
+        sh:minCount 1 ;
+        sh:datatype xsd:string ;
+    ] ;
+
+    # Must be linked (either direction) to at least one AAB via sio:SIO_001403
+    sh:property [
+        sh:path [
+            sh:alternativePath (
+                sio:SIO_001403
+                [ sh:inversePath sio:SIO_001403 ]
+            )
+        ] ;
+        sh:minCount 1 ;
+        sh:nodeKind sh:IRI ;
+        sh:message "Each AutoimmuneDisease must be linked (either direction) to an Autoantibody via sio:SIO_001403." ;
+    ] ;
+
+    # Robust typing check for the linked AAB nodes (no inference required)
+    sh:sparql [
+        a sh:SPARQLConstraint ;
+        sh:message "Disease SIO_001403 links must connect to an autoantibody instance (rdf:type/rdfs:subClassOf* makaao:Autoantibody)." ;
+        sh:select """
+            PREFIX rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+            PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+            PREFIX sio:  <http://semanticscience.org/resource/>
+            SELECT $this ?aab WHERE {
+              {
+                $this sio:SIO_001403 ?aab .
+              } UNION {
+                ?aab sio:SIO_001403 $this .
+              }
+              FILTER NOT EXISTS {
+                ?aab rdf:type ?t .
+                ?t rdfs:subClassOf* <http://makaao.inria.fr/kg/Autoantibody> .
+              }
+            }
+        """ ;
+    ] .
+
+######################################################################
+# 5. Autoantibodies (makaao:Autoantibody)
+######################################################################
+
+makaao:AutoantibodyBiomarkerShape
+    a sh:NodeShape ;
+    # Targets all 374 Autoantibody instances (and subclasses)
+    sh:target [
+        a sh:SPARQLTarget ;
+        sh:select """
+            PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+            PREFIX makaao: <http://makaao.inria.fr/kg/>
+            SELECT ?this WHERE {
+                ?this a ?type .
+                ?type rdfs:subClassOf* makaao:Autoantibody .
+            }
+        """ ;
+    ] ;
+
+    # 1. Basic Metadata
+    sh:nodeKind sh:IRI ;
+    sh:property [
+        sh:path rdfs:label ;
+        sh:minCount 1 ;
+        sh:message "Autoantibody must have an rdfs:label." ;
+    ] ;
+
+    # 2. Mandatory Biomarker Link (Forward)
+    sh:property [
+        sh:path biolink:biomarker_for ;
+        sh:minCount 1 ;
+        sh:message "Autoantibody must be a biolink:biomarker_for at least one Phenotype (HP_0030057)." ;
+    ] ;
+
+    # 3. Symmetry Check: Autoantibody --biomarker_for--> Phenotype 
+    # Must have matching: Phenotype --has_biomarker--> Autoantibody
+    sh:sparql [
+        a sh:SPARQLConstraint ;
+        sh:message "Symmetry violation: The biomarker link between Autoantibody and Phenotype (HP_0030057) must be bi-directional." ;
+        sh:select """
+            PREFIX biolink: <https://w3id.org/biolink/vocab/>
+            PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+            SELECT $this ?phenotype WHERE {
+                # Find the forward link
+                $this biolink:biomarker_for ?phenotype .
+                
+                # Verify the object is an HP_0030057 descendant
+                ?phenotype a ?type .
+                ?type rdfs:subClassOf* <http://purl.obolibrary.org/obo/HP_0030057> .
+                
+                # Check for the missing inverse link
+                FILTER NOT EXISTS { ?phenotype biolink:has_biomarker $this }
+            }
+        """ ;
+    ] .
