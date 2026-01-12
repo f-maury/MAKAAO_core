@@ -4,8 +4,6 @@
 
 # MAKAAO knowledge graph
 
-## ⚠️ DISCLAIMER: Work in progress ⚠️
-
 ## Installation
 
    1. Download the repository and enter it: 
@@ -30,9 +28,13 @@
 
    4. If everything runs without issue:
       * MAKAAO KG and Lite KG will be located in `kg/` folder
-      * CSV reports and PNG plots will be in `plots_and_stats/`
       * Normalized tables will be in `data/processed_tables/`.
       * Enrichment tables will be in `data/enrichment_tables/`.
+
+## Annex
+* `tests/` contains the `shacl_shapes.ttl` file used by the GitHub CI workflow to validate some constraints on the knowledge graph.
+* Sample data are located in `data/makaao_sample.csv`.
+
 
 ## WARNING
 
