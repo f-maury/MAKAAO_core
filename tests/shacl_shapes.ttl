@@ -46,6 +46,36 @@ makaao:RelationShape
         sh:severity sh:Warning ;
     ] .
 
+
+makaao:RelationReificationShape
+    a sh:NodeShape ;
+    sh:targetClass makaao:Relation ;
+    
+    # 1. Ensure it is also an rdf:Statement
+    sh:property [
+        sh:path rdf:type ;
+        sh:hasValue rdf:Statement ;
+        sh:message "Every makaao:Relation must also be an rdf:Statement." ;
+    ] ;
+
+    # 2. Ensure the reified triple actually exists in the graph
+    sh:sparql [
+        a sh:SPARQLConstraint ;
+        sh:message "The triple defined in this Relation instance {?s ?p ?o} is missing from the graph." ;
+        sh:select """
+            PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+            SELECT $this ?s ?p ?o
+            WHERE {
+                $this rdf:subject ?s .
+                $this rdf:predicate ?p .
+                $this rdf:object ?o .
+                FILTER NOT EXISTS {
+                    ?s ?p ?o .
+                }
+            }
+        """ ;
+    ] .
+
 ######################################################################
 # 2. Documentation sources (makaao:Document)
 ######################################################################
