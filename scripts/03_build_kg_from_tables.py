@@ -136,10 +136,10 @@ def read_csv_rows(path):
         out = []
         for raw in rdr:
             row = {}
-            for o, l in zip(orig, low):
-                v = (raw.get(o) or "").strip()
-                row[o] = v  # preserve original case
-                row[l] = v  # lowercase alias
+            for original, lower in zip(orig, low):
+                v = (raw.get(original) or "").strip()
+                row[original] = v  # preserve original case
+                row[lower] = v  # lowercase alias
             out.append(row)
         return out  # returns list of dicts representing CSV rows
 
@@ -1065,7 +1065,7 @@ def process_diseases(
                         add_pref(g, pos_uri, term)
 
                     # Instance and phenotype links
-###########################################################
+                    ########################################
                     # code_norm : normalized code HP:xxx of phenotype linked to Orpha disease
                     # before adding an instance of that HP_xxx class linked to the orpha disease, 
                     # we need to check that HP_xxx class is not already used as positivity phenotype for an AAb
@@ -1083,12 +1083,10 @@ def process_diseases(
 
                     if key is not None:
                         pos_inst = next((s for s in g.subjects(BIOLINK.has_biomarker, MAKAAO[f"aab_{key}_instance"]) if (s, RDF.type, pos_uri) in g), URIRef(MAKAAO[f"positivity_{key}_instance"]),)
-                    # this will create positivity_{key}_instance if not found in the graph yet, if the an AAb has several, we take care of that too
-#########################################################
-                    elif key == None:
+                    elif key is None:
                         pos_inst = MAKAAO[f"{make_valid(str(pos_uri).split('/')[-1])}_instance"]
-                    if key != None:
-                        print(key)
+                    if key is not None:
+                        #print(key)
                     g.add((pos_inst, RDF.type, pos_uri))
                     g.add((inst, SIO["SIO_001279"], pos_inst))  # has_phenotype
                     g.add((pos_inst, SIO["SIO_001280"], inst))  # is_phenotype_of

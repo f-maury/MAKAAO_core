@@ -7,12 +7,13 @@ import pandas as pd
 
 # =========================== DEFINE PATHS ===========================
 INP = Path("../data/makaao_core.csv")  # makaao core table
-OUT_DIR = Path("../data/processed_tables/") # where we will store processed tables
+OUT_DIR = Path("../data/processed_tables/")  # where we will store processed tables
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # =========================== DEFINE REGEX ===========================
-pmid_rx = re.compile(r"^\s*PMID\s*:\s*(\d+)\s*$", re.IGNORECASE) # detect PMID
-http_rx = re.compile(r"^https?://", re.IGNORECASE) # detect URL
+pmid_rx = re.compile(r"^\s*PMID\s*:\s*(\d+)\s*$", re.IGNORECASE)  # detect PMID
+http_rx = re.compile(r"^https?://", re.IGNORECASE)  # detect URL
+
 
 # =========================== DEFINE FUNCTIONS ===========================
 def split_tokens(s: object, primary: str = "|") -> List[str]:
@@ -73,7 +74,7 @@ def clean_cui(tok: str) -> str:
 
 
 def norm_hp(hp: str) -> str:
-    """Normalize 'HP:123' -> 'hp:0000123'; otherwise return as is.""" # add 0s to have 7 digits, because sometimes, when treated as int, the 0s are removed
+    """Normalize 'HP:123' -> 'hp:0000123'; otherwise return as is."""  # add 0s to have 7 digits, because sometimes, when treated as int, the 0s are removed
     s = str(hp).strip()
     if s.upper().startswith("HP:"):
         return "hp:" + s.split(":", 1)[1].zfill(7)
@@ -93,7 +94,7 @@ def join_col(grp: pd.DataFrame, col: str) -> str:
     return "|".join(grp[col].dropna().astype(str)) if col in grp else ""
 
 
-def to_int_or_none(x) -> int | None: # get the correct int from a string
+def to_int_or_none(x) -> int | None:  # get the correct int from a string
     """Safely parse int-like values such as '12' or '12.0'; return None if not parseable."""
     try:
         return int(float(str(x).strip()))
@@ -101,8 +102,7 @@ def to_int_or_none(x) -> int | None: # get the correct int from a string
         return None
 
 
-def normalize_loinc_part(token: str) -> str: # get LOINC part identifier, from full URI
- 
+def normalize_loinc_part(token: str) -> str:  # get LOINC part identifier, from full URI
     if token is None:
         raise ValueError("Empty LOINC part token")
 
@@ -110,7 +110,11 @@ def normalize_loinc_part(token: str) -> str: # get LOINC part identifier, from f
     if not tok:
         raise ValueError("Empty LOINC part token")
 
-    m_url = re.match(r"^https?://(?:www\.)?loinc\.org/(?:part/)?(LP\d+-\d+)(?:/)?$", tok, flags=re.IGNORECASE)
+    m_url = re.match(
+        r"^https?://(?:www\.)?loinc\.org/(?:part/)?(LP\d+-\d+)(?:/)?$",
+        tok,
+        flags=re.IGNORECASE,
+    )
     if m_url:
         return m_url.group(1).upper()
 
@@ -119,7 +123,6 @@ def normalize_loinc_part(token: str) -> str: # get LOINC part identifier, from f
     if m_code:
         return m_code.group(1).upper()
     raise ValueError(f"Not a valid LOINC part URL or code: {token!r}")
-
 
 
 # -------- Slot-alignment helpers --------
@@ -131,7 +134,7 @@ def _split_slots(cell: object) -> List[str]:
     if pd.isna(cell):
         return []
     text = str(cell).replace("\r\n", "\n").replace("\r", "\n")
-    return [slot.strip() for slot in text.split("|")] # return a list
+    return [slot.strip() for slot in text.split("|")]  # return a list
 
 
 def _items_in_slot(slot: str) -> List[str]:
@@ -144,7 +147,7 @@ def _items_in_slot(slot: str) -> List[str]:
     s = slot.replace("\r\n", "\n").replace("\r", "\n").replace("\n", ";").strip()
     if s == "":
         return []
-    return [t.strip() for t in s.split(";") if t.strip()] # return a list
+    return [t.strip() for t in s.split(";") if t.strip()]  # return a list
 
 
 def pair_values_and_sources_by_slot(
@@ -171,7 +174,10 @@ def pair_values_and_sources_by_slot(
     s_slots = _split_slots(sources_cell)
 
     PAD_ALLOWED = {
-        ("syn_en", "syn_en_source"), # if mismatch in the number of items, and the number of sources for these columns, we pad. other columns: error
+        (
+            "syn_en",
+            "syn_en_source",
+        ),  # if mismatch in the number of items, and the number of sources for these columns, we pad. other columns: error
         ("syn_fr", "syn_fr_source"),
     }
 
@@ -183,10 +189,12 @@ def pair_values_and_sources_by_slot(
             elif len(s_slots) < len(v_slots):
                 s_slots = s_slots + [""] * (len(v_slots) - len(s_slots))
         else:
+
             def _preview(slots: List[str], n=3) -> str:
                 return " | ".join(slots[:n]) + ("" if len(slots) <= n else " | ...")
+
             raise ValueError(
-                f"Slot count mismatch at index={idx_for_error}: " # error if mismatch and not in allowed columns
+                f"Slot count mismatch at index={idx_for_error}: "  # error if mismatch and not in allowed columns
                 f"'{value_col_name}' has {len(v_slots)} slot(s) "
                 f"vs '{source_col_name}' has {len(s_slots)} slot(s). "
                 f"First slots — {value_col_name}: [{_preview(v_slots)}] ; "
@@ -203,7 +211,7 @@ def pair_values_and_sources_by_slot(
         else:
             for v in values:
                 for s in srcs:
-                    pairs.append((v, s)) # return list of matched item-source pairs
+                    pairs.append((v, s))  # return list of matched item-source pairs
     return pairs
 
 
@@ -214,10 +222,13 @@ def load_core(inp: Path) -> pd.DataFrame:
     Set 'index' == aab_id (int64).
     """
     import warnings
+
     t = pd.read_csv(inp)
 
     if "aab_id" not in t.columns:
-        raise KeyError("Missing 'aab_id' column.") # load maakao ore rows that are not empty
+        raise KeyError(
+            "Missing 'aab_id' column."
+        )  # load maakao ore rows that are not empty
 
     s = t["aab_id"]
 
@@ -225,36 +236,42 @@ def load_core(inp: Path) -> pd.DataFrame:
     missing = s.isna() | (s.astype(str).str.strip() == "")
     if missing.any():
         idxs = t.index[missing].tolist()[:20]
-        warnings.warn(f"load_core: dropping {missing.sum()} row(s) with blank aab_id; sample indices: {idxs}")
+        warnings.warn(
+            f"load_core: dropping {missing.sum()} row(s) with blank aab_id; sample indices: {idxs}"
+        )
         t = t.loc[~missing].copy()
         s = t["aab_id"]
 
     # Coerce to numeric and drop non-numeric
-    num = pd.to_numeric(s, errors="coerce") # if problem with an aab_id, display it
+    num = pd.to_numeric(s, errors="coerce")  # if problem with an aab_id, display it
     badnum = num.isna()
     if badnum.any():
         examples = t.loc[badnum, "aab_id"].astype(str).head(20).tolist()
-        warnings.warn(f"load_core: dropping {badnum.sum()} row(s) with non-numeric aab_id; examples: {examples}")
+        warnings.warn(
+            f"load_core: dropping {badnum.sum()} row(s) with non-numeric aab_id; examples: {examples}"
+        )
         t = t.loc[~badnum].copy()
         num = num.loc[~badnum]
 
     # Require integers (allow '12.0' but reject '12.3')
-    nonint = (num % 1 != 0)
+    nonint = num % 1 != 0
     if nonint.any():
-        examples = t.loc[nonint, "aab_id"].astype(str).head(20).tolist() # if other type of problem with an aab_id, also display it
-        warnings.warn(f"load_core: dropping {nonint.sum()} row(s) with non-integer aab_id; examples: {examples}")
+        examples = (
+            t.loc[nonint, "aab_id"].astype(str).head(20).tolist()
+        )  # if other type of problem with an aab_id, also display it
+        warnings.warn(
+            f"load_core: dropping {nonint.sum()} row(s) with non-integer aab_id; examples: {examples}"
+        )
         t = t.loc[~nonint].copy()
         num = num.loc[~nonint]
 
-    t["index"] = num.astype("int64").values # return filtered data
+    t["index"] = num.astype("int64").values  # return filtered data
     return t
-
-
 
 
 # =========================== WRITERS ===========================
 def write_index_name_en(df: pd.DataFrame, out_dir: Path) -> None:
-    """Write [index, name_en] by taking the first non-empty English name per index.""" # write table with aab_id - name_en
+    """Write [index, name_en] by taking the first non-empty English name per index."""  # write table with aab_id - name_en
     name_en = (
         df.sort_values("index")
         .groupby("index")["name_en"]
@@ -266,7 +283,7 @@ def write_index_name_en(df: pd.DataFrame, out_dir: Path) -> None:
 
 
 def write_index_hpo_id(df: pd.DataFrame, out_dir: Path) -> None:
-    """Write [index, hpo_id] flattening multi-valued cells and normalizing IDs.""" # write table with aab_id - hpo_id pairs
+    """Write [index, hpo_id] flattening multi-valued cells and normalizing IDs."""  # write table with aab_id - hpo_id pairs
     rows = []
     for idx, grp in df.groupby("index", sort=True):
         toks = [norm_hp(x) for x in split_tokens(join_col(grp, "hpo_id"))]
@@ -294,7 +311,6 @@ def write_index_parent_index(df: pd.DataFrame, out_dir: Path) -> None:
         {"index": "int64", "parent_index": "int64"}
     )
     parents_df.to_csv(out_dir / "index_parent_index.csv", index=False)
-
 
 
 def write_index_syn_en(df: pd.DataFrame, out_dir: Path) -> None:

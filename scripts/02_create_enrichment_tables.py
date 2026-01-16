@@ -7,556 +7,319 @@ import json
 import os
 import re
 import time
-from typing import Dict, Optional, Tuple, List
 import requests
+from typing import Optional, Tuple, List
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-UMLS_API_KEY = ""  # WRITE YOUR UMLS API KEY HERE
+# --- CONFIGURATION ---
+# NOTE: Update IN_PATH to point to your local MRCONSO.RRF file
+IN_PATH = "/mnt/d/umls-2024AB-full_metamor/2024AB-full/2024AB/2024AB/META/MRCONSO.RRF"
 
-# allow very long STR fields
+# File Paths
+DATA_DIR = "../data"
+ENRICH_DIR = os.path.join(DATA_DIR, "enrichment_tables")
+
+# Final output files
+XML_PATH = os.path.join(DATA_DIR, "en_product4.xml")
+OUT_ORPHA_LINKS = os.path.join(ENRICH_DIR, "orphanet_hpo_links.csv")
+INPUT_CSV_CORE = os.path.join(DATA_DIR, "makaao_core.csv")
+OUTPUT_CSV_FINAL = os.path.join(ENRICH_DIR, "code_names.csv")
+
+# API URLs
+UNIPROT_JSON_URL = "https://rest.uniprot.org/uniprotkb/{acc}"
+OLS4_TERM_API = "https://www.ebi.ac.uk/ols4/api/ontologies/{onto}/terms"
+HEADERS = {"Accept": "application/json"}
+
+# Global storage for in-memory mapping and tracking
+umls_names_map = {}
+results_tracker = {
+    "UniProt": {"success": 0, "fail": 0},
+    "ORPHA": {"success": 0, "fail": 0},
+    "ChEBI": {"success": 0, "fail": 0},
+    "UMLS": {"success": 0, "fail": 0},
+    "LOINC": {"success": 0, "fail": 0}
+}
+
+# Increase CSV field size limit
 _lim = sys.maxsize
 while True:
     try:
         csv.field_size_limit(_lim)
-        break  # allow processing of very long string in CSV cells
+        break
     except OverflowError:
         _lim //= 10
 
-IN_PATH = "/mnt/d/umls-2024AB-full_metamor/2024AB-full/2024AB/2024AB/META/MRCONSO.RRF"  # path to MRCONSO.RRF we will use (ideally ../data/umls/MRCONSO.RRF)
 
-OUT_HPO = "../data/enrichment_tables/umls_hpo.csv"  # enrichment tables we will produce
-OUT_ORPH = "../data/enrichment_tables/umls_orphanet.csv"
-OUT_LNC = "../data/enrichment_tables/umls_loinc.csv"
-OUT_CHE = "../data/enrichment_tables/umls_chebi.csv"
-OUT_NAME = "../data/enrichment_tables/umls_names.csv"
+# --- PART 1: PROCESS MRCONSO.RRF (Direct to Memory) ---
+def process_mrconso():
+    print(f"Processing MRCONSO.RRF from {IN_PATH}...")
+    if not os.path.exists(IN_PATH):
+        print(f"ERROR: Input file not found at {IN_PATH}.")
+        return
 
-HEADER = [
-    "CUI",
-    "LAT",
-    "TS",
-    "LUI",
-    "STT",
-    "SUI",
-    "ISPREF",
-    "AUI",
-    "SAUI",
-    "SCUI",
-    "SDUI",
-    "SAB",
-    "TTY",
-    "CODE",
-    "STR",
-    "SRL",
-    "SUPPRESS",
-    "CVF",
-]  # columns in mrconso
-
-with (
-    open(IN_PATH, "r", encoding="utf-8", errors="replace", newline="") as fin,
-    open(OUT_HPO, "w", encoding="utf-8", newline="") as fhpo,
-    open(OUT_ORPH, "w", encoding="utf-8", newline="") as forph,
-    open(OUT_LNC, "w", encoding="utf-8", newline="") as flnc,
-    open(OUT_CHE, "w", encoding="utf-8", newline="") as fche,
-    open(OUT_NAME, "w", encoding="utf-8", newline="") as fnames,
-):
-    reader = csv.reader(fin, delimiter="|")
-    whpo = csv.writer(
-        fhpo, lineterminator="\n"
-    )  # open files to write, and file to read
-    worph = csv.writer(forph, lineterminator="\n")
-    wlnc = csv.writer(flnc, lineterminator="\n")
-    wche = csv.writer(fche, lineterminator="\n")
-    wnames = csv.writer(fnames, lineterminator="\n")
-
-    whpo.writerow(HEADER)
-    worph.writerow(HEADER)
-    wlnc.writerow(HEADER)
-    wche.writerow(HEADER)
-    wnames.writerow(["CUI", "STR"])
-
-    names_seen = set()
-
-    for parts in reader:
-        if len(parts) < 18:
-            continue
-        row = parts[:18]
-        sab = row[11]
-
-        if sab == "HPO":
-            whpo.writerow(row)
-        elif sab == "ORPHANET":
-            worph.writerow(row)
-        elif sab == "LNC":  # LOINC
-            wlnc.writerow(row)
-        elif sab == "CHEBI":  # CHEBI: normalize CODE to CHEBI:<num>
-            code = (row[13] or "").strip()
-            if code:
-                u = code.upper()
-                if u.startswith("CHEBI:"):  # already CHEBI:<num>
-                    code = "CHEBI:" + code.split(":", 1)[1]
-                elif u.startswith("CHE:") and not u.startswith(
-                    "CHEBI:"
-                ):  # CHE:<num> -> CHEBI:<num>
-                    code = "CHEBI:" + code.split(":", 1)[1]
-                elif re.fullmatch(r"\d+", code):  # bare number -> CHEBI:<num>
-                    code = "CHEBI:" + code
-            row[13] = code
-            wche.writerow(row)
-
-        # main English preferred, not suppressed
-        if row[1] == "ENG" and row[2] == "P" and row[16] == "N":
-            key = (row[0], row[14])
-            if key not in names_seen:
-                wnames.writerow([row[0], row[14]])
-                names_seen.add(key)
-
-###########################################################################################
-
-xml_path = "../data/en_product4.xml"  # read Orphanet file with disease-HPO links
-out_csv = "../data/enrichment_tables/orphanet_hpo_links.csv"  # write in new csv file
-
-base_url_orpha = "http://www.orpha.net/ORDO/Orphanet_"
-base_url_hpo = "http://purl.obolibrary.org/obo/"
+    os.makedirs(ENRICH_DIR, exist_ok=True)
+    count = 0
+    with open(IN_PATH, "r", encoding="utf-8", errors="replace", newline="") as fin:
+        reader = csv.reader(fin, delimiter="|")
+        for parts in reader:
+            if len(parts) < 18:
+                continue
+            # Filter for English Preferred names
+            if parts[1] == "ENG" and parts[2] == "P" and parts[16] == "N":
+                cui, name = parts[0], parts[14]
+                if cui not in umls_names_map:
+                    umls_names_map[cui] = name
+                    count += 1
+    print(f"Part 1: Loaded {count} UMLS names into memory.")
 
 
-def local(tag: str) -> str:
-    return tag.rsplit("}", 1)[-1] if "}" in tag else tag  # extract name from XML tag
-
+# --- PART 2: PROCESS ORPHANET XML ---
+def local_tag(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1] if "}" in tag else tag
 
 def get_lang(elem):
-    return elem.attrib.get("lang") or elem.attrib.get(
-        "{http://www.w3.org/XML/1998/namespace}lang"
-    )  # extract xml:lang attribute or lang attribute from XML element
+    return elem.attrib.get("lang") or elem.attrib.get("{http://www.w3.org/XML/1998/namespace}lang")
 
-
-def freq_rank(
-    txt: str,
-) -> tuple[
-    int, str
-]:  # translate frequency text to numerical rank in a tuple, if nothing found return a tuple with -1
-    if not txt:
-        return (-1, "Unknown")
+def freq_rank(txt: str) -> Tuple[int, str]:
+    if not txt: return (-1, "Unknown")
     t = txt.strip().lower()
-    if "obligate" in t or "always present" in t or "100%" in t:
-        return (5, txt.strip())
-    if "very frequent" in t or ("99" in t and "80" in t):
-        return (4, txt.strip())
-    if "frequent" in t and "very" not in t:
-        return (3, txt.strip())
+    if "obligate" in t or "always present" in t or "100%" in t: return (5, txt.strip())
+    if "very frequent" in t or ("99" in t and "80" in t): return (4, txt.strip())
+    if "frequent" in t and "very" not in t: return (3, txt.strip())
     return (-1, txt.strip())
 
-
-rows = []  # (orpha_iri, hpo_iri, hpo_term, frequency, rank)
-
-root = ET.parse(xml_path).getroot()
-for disorder in root.iter():
-    if local(disorder.tag) != "Disorder":  # find Disorders in the XML structure
-        continue
-
-    oc, assoc_list = None, None
-    for ch in disorder:
-        n = local(ch.tag)
-        if n == "OrphaCode" and (ch.text or "").strip():  # get orpha code
-            oc = ch.text.strip()
-        elif n == "HPODisorderAssociationList":  # get HPO associations
-            assoc_list = ch
-    if not oc or assoc_list is None:
-        continue
-
-    for assoc in assoc_list:
-        if local(assoc.tag) != "HPODisorderAssociation":  # if no HPO association, skip
-            continue
-
-        hpo_id, hpo_term = None, None
-        hpo = next(
-            (n for n in assoc if local(n.tag) == "HPO"), None
-        )  # if there are HPO terms, for each of them, we get some info
-        if hpo is not None:
-            hid = next((n for n in hpo if local(n.tag) == "HPOId"), None)
-            htm = next((n for n in hpo if local(n.tag) == "HPOTerm"), None)
-            if hid is not None and (hid.text or "").strip():
-                hpo_id = hid.text.strip()
-            if htm is not None and (htm.text or "").strip():
-                hpo_term = htm.text.strip()
-        if not hpo_id:
-            continue
-
-        freq_name = None
-        freq = next(
-            (n for n in assoc if local(n.tag) == "HPOFrequency"), None
-        )  # get the frequency of each HPO term
-        if freq is not None:
-            names = [
-                n for n in freq if local(n.tag) == "Name" and (n.text or "").strip()
-            ]
-            en = next((n for n in names if (get_lang(n) or "").lower() == "en"), None)
-            chosen = en or (names[0] if names else None)
-            if chosen is not None:
-                freq_name = chosen.text.strip()
-
-        rank, freq_name = freq_rank(freq_name)
-        if rank >= 3:  # keep Frequent or higher
-            rows.append(
-                (
-                    base_url_orpha + oc,
-                    base_url_hpo + hpo_id.replace(":", "_"),
-                    hpo_term,
-                    freq_name,
-                    rank,
-                )
-            )
-
-df = pd.DataFrame(
-    rows, columns=["orpha_code", "HPOId", "HPOTerm", "frequency", "rank"]
-)  # write result in a csv file
-if not df.empty:
-    df = (
-        df.sort_values("rank", ascending=False)
-        .drop_duplicates(["orpha_code", "HPOId"])
-        .sort_values(["orpha_code", "HPOId"])
-        .drop(columns=["rank"])
-    )
-
-df.to_csv(out_csv, index=False)
-print(f"Wrote {len(df):,} rows to {out_csv}")
-
-############################################################################################
+def process_orphanet():
+    print(f"Processing Orphanet XML from {XML_PATH}...")
+    if not os.path.exists(XML_PATH):
+        print(f"Warning: XML file not found at {XML_PATH}. Skipping Step 2.")
+        return
+    rows = []
+    try:
+        root = ET.parse(XML_PATH).getroot()
+        for disorder in root.iter():
+            if local_tag(disorder.tag) != "Disorder": continue
+            oc, assoc_list = None, None
+            for ch in disorder:
+                n = local_tag(ch.tag)
+                if n == "OrphaCode" and (ch.text or "").strip(): oc = ch.text.strip()
+                elif n == "HPODisorderAssociationList": assoc_list = ch
+            if not oc or assoc_list is None: continue
+            for assoc in assoc_list:
+                hpo_id, hpo_term = None, None
+                hpo = next((n for n in assoc if local_tag(n.tag) == "HPO"), None)
+                if hpo is not None:
+                    hid = next((n for n in hpo if local_tag(n.tag) == "HPOId"), None)
+                    htm = next((n for n in hpo if local_tag(n.tag) == "HPOTerm"), None)
+                    if hid is not None: hpo_id = (hid.text or "").strip()
+                    if htm is not None: hpo_term = (htm.text or "").strip()
+                if not hpo_id: continue
+                freq_name = None
+                freq = next((n for n in assoc if local_tag(n.tag) == "HPOFrequency"), None)
+                if freq is not None:
+                    names = [n for n in freq if local_tag(n.tag) == "Name" and (n.text or "").strip()]
+                    en = next((n for n in names if (get_lang(n) or "").lower() == "en"), None)
+                    chosen = en or (names[0] if names else None)
+                    if chosen is not None: freq_name = chosen.text.strip()
+                rank, freq_name = freq_rank(freq_name)
+                if rank >= 3:
+                    rows.append(("http://www.orpha.net/ORDO/Orphanet_" + oc, 
+                                 "http://purl.obolibrary.org/obo/" + hpo_id.replace(":", "_"), 
+                                 hpo_term, freq_name, rank))
+        df = pd.DataFrame(rows, columns=["orpha_code", "HPOId", "HPOTerm", "frequency", "rank"])
+        if not df.empty:
+            df = df.sort_values("rank", ascending=False).drop_duplicates(["orpha_code", "HPOId"]).drop(columns=["rank"])
+        df.to_csv(OUT_ORPHA_LINKS, index=False)
+        print(f"Part 2: Wrote {len(df)} rows to {OUT_ORPHA_LINKS}")
+    except Exception as e:
+        print(f"Error in Orphanet processing: {e}")
 
 
-# --- config ---
-INPUT_CSV = "../data/makaao_core.csv"  # read makaao_core
-input_orpha = (
-    "../data/enrichment_tables/orphanet_hpo_links.csv"  # read orphanet_hpo_links
-)
-OUTPUT_CSV = "../data/enrichment_tables/code_names.csv"  # write in code_names.csv; required for UMLS
-
-# API URLs to retrieve info from various terminologies
-UNIPROT_JSON_URL = "https://rest.uniprot.org/uniprotkb/{acc}"
-UMLS_CONCEPT_URL = "https://uts-ws.nlm.nih.gov/rest/content/current/CUI/{cui}"
-UMLS_SOURCE_CODE_URL = (
-    "https://uts-ws.nlm.nih.gov/rest/content/current/source/{sab}/{code}"
-)
-OLS4_TERM_API = "https://www.ebi.ac.uk/ols4/api/ontologies/{onto}/terms"
-HEADERS = {"Accept": "application/json"}
-
-
-
-# ---------- helpers ----------
-def split_items(
-    cell: str,
-) -> List[str]:  # split string around various delimiters, return a list
-    """Generic split for ID fields: split on whitespace, pipe, comma, semicolon."""
-    if not cell:
-        return []
-    return [s for s in re.split(r"[ \t\r\n|,;]+", cell.strip()) if s]
-
-
-def split_items_pipe(cell: str) -> List[str]:  # split string around |, return list
-    """Strict split for LOINC columns: only '|' or newlines. Preserves spaces inside names."""
-    if not cell:
-        return []
-    return [s.strip() for s in re.split(r"[|\r\n]+", cell.strip()) if s.strip()]
-
-
-def req_get(
-    url: str,
-    params: Optional[dict] = None,
-    headers: Optional[dict] = None,  # function to query an API with retries
-    retries: int = 3,
-    backoff: float = 0.7,
-    timeout: int = 25,
-) -> Optional[requests.Response]:
-    last = None
-    for i in range(retries):
+# --- PART 3: ENRICHMENT & TRACKING ---
+def req_get(url: str, params: Optional[dict] = None) -> Optional[requests.Response]:
+    for i in range(3):
         try:
-            r = requests.get(
-                url, params=params, headers=headers or HEADERS, timeout=timeout
-            )
-            if r.status_code in (200, 404):
-                return r
+            r = requests.get(url, params=params, headers=HEADERS, timeout=20)
+            if r.status_code in (200, 404): return r
             if r.status_code in (429, 500, 502, 503, 504):
-                time.sleep(backoff * (2**i))
+                time.sleep(0.5 * (2**i))
                 continue
             return r
-        except requests.RequestException as e:
-            last = e
-        time.sleep(backoff * (2**i))
-    if last:
-        raise last
+        except requests.RequestException:
+            time.sleep(0.5 * (2**i))
     return None
 
+def split_items(cell: str) -> List[str]:
+    if not cell: return []
+    return [s for s in re.split(r"[ \t\r\n|,;]+", cell.strip()) if s]
 
-# ---------- normalizers ----------
+def split_items_pipe(cell: str) -> List[str]:
+    if not cell: return []
+    return [s.strip() for s in re.split(r"[|\r\n]+", cell.strip()) if s.strip()]
+
+# Normalizers
 def norm_uniprot(x: str) -> Optional[str]:
-    # Remove optional UniProt prefix "UP" or "UP:" (case-insensitive), then strip spaces.
     x = re.sub(r"(?i)^UP:?", "", (x or "").strip())
-    # If the remaining string is 6–10 alphanumeric characters, return it uppercased;
-    # otherwise return None (invalid UniProt-style ID).
     return x.upper() if re.fullmatch(r"[A-Za-z0-9]{6,10}", x) else None
 
-
 def norm_umls(x: str) -> Optional[str]:
-    # Match optional "CUI:" prefix, followed by a CUI of the form C + 7–8 digits (case-insensitive).
     m = re.fullmatch(r"(?i)(?:CUI:)?(C\d{7,8})", (x or "").strip())
-    # If matched, return the CUI in uppercase (e.g. "C1234567"); else None.
     return m.group(1).upper() if m else None
 
-
 def norm_orpha(x: str) -> Optional[str]:
-    # Require "ORPHA:" or "ORPHANET:" (case-insensitive) followed by digits; capture the digits.
     m = re.fullmatch(r"(?i)(?:ORPHA:|ORPHANET:)(\d+)", (x or "").strip())
-    # Return the numeric Orphanet ID (string) or None.
     return m.group(1) if m else None
-
 
 def norm_chebi(x: str) -> Optional[str]:
-    # Allow optional "CHEBI:", "CHE:" prefix (case-insensitive) before digits; capture the digits.
     m = re.fullmatch(r"(?i)(?:CHEBI:|CHE:)?(\d+)", (x or "").strip())
-    # Return the numeric ChEBI ID (string) or None.
     return m.group(1) if m else None
 
-
 def norm_loinc_part(x: str) -> Optional[str]:
-    # Normalize to uppercase and strip spaces.
     x = (x or "").strip().upper()
-    # Accept LOINC part IDs of the form "LP" + digits, with optional "-digits" suffix (e.g. LP12345-6).
     m = re.fullmatch(r"LP\d+(?:-\d+)?", x)
-    # Return the normalized part ID or None.
     return m.group(0) if m else None
 
-
-# ---------- resolvers ----------
-def uniprot_name(
-    acc: str,
-) -> Tuple[
-    Optional[str], str
-]:  # function to query Uniprot API using a Uniprot ID, return name and page URL
-    r = req_get(UNIPROT_JSON_URL.format(acc=acc))
+# Resolvers
+def uniprot_name(acc: str) -> Tuple[Optional[str], str]:
     page = f"https://www.uniprot.org/uniprotkb/{acc}"
-    if not r or r.status_code != 200:
-        return None, page
+    r = req_get(UNIPROT_JSON_URL.format(acc=acc))
+    if not r or r.status_code != 200: return None, page
     try:
         d = r.json()
-    except json.JSONDecodeError:
-        return None, page
-    pd = d.get("proteinDescription") or {}
-    name = (
-        (((pd.get("recommendedName") or {}).get("fullName") or {}).get("value"))
-        or next(
-            (
-                x.get("fullName", {}).get("value")
-                for x in pd.get("submissionNames", [])
-                if x.get("fullName")
-            ),
-            None,
-        )
-        or next(
-            (
-                x.get("fullName", {}).get("value")
-                for x in pd.get("alternativeNames", [])
-                if x.get("fullName")
-            ),
-            None,
-        )
-        or d.get("uniProtkbId")
-    )
-    return name, page
+        pd = d.get("proteinDescription") or {}
+        name = ((((pd.get("recommendedName") or {}).get("fullName") or {}).get("value")) or 
+                next((x.get("fullName", {}).get("value") for x in pd.get("submissionNames", []) if x.get("fullName")), None) or 
+                next((x.get("fullName", {}).get("value") for x in pd.get("alternativeNames", []) if x.get("fullName")), None) or d.get("uniProtkbId"))
+        return name, page
+    except: return None, page
 
-
-def umls_name(
-    cui: str,
-) -> Tuple[
-    Optional[str], str
-]:  # function to get infos from UMLS API from a CUI, return name and page URL; use API key
-    page = f"https://uts.nlm.nih.gov/uts/umls/concept/{cui}"
-    r = req_get(UMLS_CONCEPT_URL.format(cui=cui), params={"apiKey": UMLS_API_KEY})
-    if not r or r.status_code != 200:
-        return None, page
-    try:
-        d = r.json()
-    except json.JSONDecodeError:
-        return None, page
-    return (d.get("result") or {}).get("name"), page
-
-
-
-def _ols_label(resp_json: dict) -> Optional[str]:  # extract 1st label from OLS response
-    terms = (resp_json.get("_embedded") or {}).get("terms") or []
-    return terms[0].get("label") if terms else None
-
-
-def orpha_name(
-    orpha_id: str,
-) -> Tuple[
-    Optional[str], str
-]:  # query OLS API for Orphanet name using Orpha ID, return name and page URL
+def orpha_name(orpha_id: str) -> Tuple[Optional[str], str]:
     page = f"https://www.orpha.net/consor/cgi-bin/OC_Exp.php?lng=en&Expert={orpha_id}"
-    # Try short_form
-    r = req_get(
-        OLS4_TERM_API.format(onto="ordo"), params={"short_form": f"Orphanet_{orpha_id}"}
-    )
-    if r and r.status_code == 200:
-        try:
-            name = _ols_label(r.json())
-            if name:
-                return name, page
-        except json.JSONDecodeError:
-            pass
-    # Try IRI
-    iri = f"http://www.orpha.net/ORDO/Orphanet_{orpha_id}"
-    r = req_get(OLS4_TERM_API.format(onto="ordo"), params={"iri": iri})
-    if r and r.status_code == 200:
-        try:
-            name = _ols_label(r.json())
-            if name:
-                return name, page
-        except json.JSONDecodeError:
-            pass
-    # Try obo_id variants
-    for obo in (f"Orphanet:{orpha_id}", f"ORPHA:{orpha_id}"):
-        r = req_get(OLS4_TERM_API.format(onto="ordo"), params={"obo_id": obo})
+    def _check(params):
+        r = req_get(OLS4_TERM_API.format(onto="ordo"), params=params)
         if r and r.status_code == 200:
             try:
-                name = _ols_label(r.json())
-                if name:
-                    return name, page
-            except json.JSONDecodeError:
-                pass
-    return None, page
+                terms = (r.json().get("_embedded") or {}).get("terms") or []
+                if terms and terms[0].get("label"): return terms[0].get("label")
+            except: pass
+        return None
+    name = _check({"short_form": f"Orphanet_{orpha_id}"})
+    if not name: name = _check({"iri": f"http://www.orpha.net/ORDO/Orphanet_{orpha_id}"})
+    if not name: name = _check({"obo_id": f"Orphanet:{orpha_id}"})
+    return name, page
 
-
-def chebi_name(
-    num: str,
-) -> Tuple[
-    Optional[str], str
-]:  # query OLS API for ChEBI name using ChEBI ID number, return name and page URL
+def chebi_name(num: str) -> Tuple[Optional[str], str]:
     page = f"https://www.ebi.ac.uk/chebi/searchId.do?chebiId=CHEBI:{num}"
     r = req_get(OLS4_TERM_API.format(onto="chebi"), params={"obo_id": f"CHEBI:{num}"})
-    if not r or r.status_code != 200:
-        return None, page
+    if not r or r.status_code != 200: return None, page
     try:
-        d = r.json()
-    except json.JSONDecodeError:
-        return None, page
-    return _ols_label(d), page
+        terms = (r.json().get("_embedded") or {}).get("terms") or []
+        return (terms[0].get("label") if terms else None), page
+    except: return None, page
 
+def enrich_data():
+    print("Starting enrichment process...")
+    if not os.path.exists(INPUT_CSV_CORE):
+        print(f"ERROR: Input CSV {INPUT_CSV_CORE} not found.")
+        return
 
-# ---------- main ----------
-def main():
-    if not UMLS_API_KEY or UMLS_API_KEY.startswith(
-        "REPLACE_"
-    ):  # warning if no UMLS API key
-        raise SystemExit("Set UMLS_API_KEY at top of script.")
+    uni, cui_list, chebi_list = [], [], []
+    orpha_from_dis, umls_from_dis = [], []
+    loinc_map = {}
 
-    uni: List[str] = []
-    cui: List[str] = []
-    chebi: List[str] = []
-    orpha_from_dis: List[str] = []
-    umls_from_dis: List[str] = []
-    loinc_map: Dict[str, str] = {}  # id -> name
-
-    with open(INPUT_CSV, newline="", encoding="utf-8") as f:  # read makaao_core.csv
+    with open(INPUT_CSV_CORE, newline="", encoding="utf-8") as f:
         rdr = csv.DictReader(f)
         cols = {c.lower(): c for c in (rdr.fieldnames or [])}
-
-        # column names
-        up_col = cols.get("uniprot_id")
-        cui_col = cols.get("umls_id")
-        cheb_col = cols.get("chebi_id")
-        dis_col = cols.get("disease_id")
-        loinc_id_col = cols.get("loinc_part_id")
-        loinc_nm_col = cols.get("loinc_part")
-
-        for row in rdr:  # parse each column of the dict read from makaao core csv
-            if up_col and row.get(up_col):
-                uni.extend(split_items(row[up_col]))
-            if cui_col and row.get(cui_col):
-                cui.extend(split_items(row[cui_col]))
-            if cheb_col and row.get(cheb_col):
-                chebi.extend(split_items(row[cheb_col]))
-
-            if dis_col and row.get(dis_col):  # check what type of disease ID we have
-                for t in split_items(row[dis_col]):
-                    orp = norm_orpha(t)
-                    if orp:
-                        orpha_from_dis.append(orp)
-                        continue
-                    cu = norm_umls(t)
-                    if cu:
-                        umls_from_dis.append(cu)
-                        continue
-
-            if loinc_id_col and row.get(
-                loinc_id_col
-            ):  # if loinc column is there, we parse it.
-                ids = [norm_loinc_part(x) for x in split_items_pipe(row[loinc_id_col])]
-                ids = [x for x in ids if x]
-                names = (
-                    split_items_pipe(row.get(loinc_nm_col, "")) if loinc_nm_col else []
-                )
-                for i, lid in enumerate(ids):
+        for row in rdr:
+            if "uniprot_id" in cols: uni.extend(split_items(row[cols["uniprot_id"]]))
+            if "umls_id" in cols: cui_list.extend(split_items(row[cols["umls_id"]]))
+            if "chebi_id" in cols: chebi_list.extend(split_items(row[cols["chebi_id"]]))
+            if "disease_id" in cols:
+                for t in split_items(row[cols["disease_id"]]):
+                    if o := norm_orpha(t): orpha_from_dis.append(o)
+                    elif c := norm_umls(t): umls_from_dis.append(c)
+            if "loinc_part_id" in cols and row.get(cols["loinc_part_id"]):
+                ids = [norm_loinc_part(x) for x in split_items_pipe(row[cols["loinc_part_id"]])]
+                nm_col = cols.get("loinc_part")
+                names = split_items_pipe(row.get(nm_col, "")) if nm_col else []
+                for i, lid in enumerate([x for x in ids if x]):
                     nm = names[i] if i < len(names) else ""
-                    if (
-                        lid not in loinc_map or not loinc_map[lid]
-                    ):  # try to map loinc id to names
-                        loinc_map[lid] = nm
+                    if lid not in loinc_map or not loinc_map[lid]: loinc_map[lid] = nm
 
-    with open(input_orpha, newline="", encoding="utf-8") as f:  # read orpha.csv
-        rdr = csv.DictReader(f)
-        cols = {c.lower(): c for c in (rdr.fieldnames or [])}
-
-        orpha_codes = cols.get("orpha_code")
-        orpha_codes = (
-            [item.split("_")[-1] for item in list(orpha_codes)] if orpha_codes else []
-        )
-
-    # normalize and dedupe
+    # Deduplicate IDs
     uni_ids = sorted({v for v in (norm_uniprot(x) for x in uni) if v})
-    cui_ids = sorted({v for v in (norm_umls(x) for x in cui) if v} | set(umls_from_dis))
-    chebi_ids = sorted({v for v in (norm_chebi(x) for x in chebi) if v})
+    cui_ids = sorted({v for v in (norm_umls(x) for x in cui_list) if v} | set(umls_from_dis))
+    chebi_ids = sorted({v for v in (norm_chebi(x) for x in chebi_list) if v})
     orpha_ids = sorted(set(orpha_from_dis))
-    try:
-        orpha_ids = orpha_ids + orpha_codes
-    except Exception as e:
-        print("Error adding Orpha codes from CSV:", e)
-    loinc_ids = sorted(loinc_map.keys())
+    if os.path.exists(OUT_ORPHA_LINKS):
+        df_orpha = pd.read_csv(OUT_ORPHA_LINKS)
+        orpha_ids = sorted(set(orpha_ids) | set(df_orpha['orpha_code'].str.split('_').str[-1]))
 
-    out_rows: List[Dict[str, str]] = []
+    out_rows = []
 
-    for acc in uni_ids:
-        name, url = uniprot_name(acc)
-        out_rows.append(
-            {"source": "UniProt", "id": acc, "name": name or "", "url": url}
-        )
-
+    # UMLS local lookup
+    print(f"Resolving {len(cui_ids)} UMLS IDs (local memory)...")
     for c in cui_ids:
-        name, url = umls_name(c)
-        out_rows.append({"source": "UMLS", "id": c, "name": name or "", "url": url})
+        name = umls_names_map.get(c)
+        if name: results_tracker["UMLS"]["success"] += 1
+        else:
+            results_tracker["UMLS"]["fail"] += 1
+            print(f"[UNSUCCESSFUL] UMLS ID: {c} - Not found in MRCONSO map.")
+        out_rows.append({"source": "UMLS", "id": c, "name": name or "", "url": f"https://uts.nlm.nih.gov/uts/umls/concept/{c}"})
 
+    # Concurrent remote lookup
+    print("Resolving external IDs concurrently...")
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_item = {}
+        for acc in uni_ids: future_to_item[executor.submit(uniprot_name, acc)] = ("UniProt", acc)
+        for oid in orpha_ids: future_to_item[executor.submit(orpha_name, oid)] = ("ORPHA", oid)
+        for ch in chebi_ids: future_to_item[executor.submit(chebi_name, ch)] = ("ChEBI", f"CHEBI:{ch}")
 
-    for oid in orpha_ids:
-        name, url = orpha_name(oid)
-        out_rows.append({"source": "ORPHA", "id": oid, "name": name or "", "url": url})
+        for future in as_completed(future_to_item):
+            source, raw_id = future_to_item[future]
+            try:
+                name, url = future.result()
+                if name: results_tracker[source]["success"] += 1
+                else:
+                    results_tracker[source]["fail"] += 1
+                    print(f"[UNSUCCESSFUL] {source} ID: {raw_id} - API returned no name.")
+                out_rows.append({"source": source, "id": raw_id, "name": name or "", "url": url})
+            except Exception as e:
+                results_tracker[source]["fail"] += 1
+                print(f"[ERROR] {source} ID: {raw_id} - {e}")
 
-    for ch in chebi_ids:
-        name, url = chebi_name(ch)
-        out_rows.append(
-            {"source": "ChEBI", "id": f"CHEBI:{ch}", "name": name or "", "url": url}
-        )
+    # LOINC local resolution
+    for lid, name in loinc_map.items():
+        if name: results_tracker["LOINC"]["success"] += 1
+        else:
+            results_tracker["LOINC"]["fail"] += 1
+            print(f"[UNSUCCESSFUL] LOINC ID: {lid} - No name found in core CSV.")
+        out_rows.append({"source": "LOINC", "id": lid, "name": name or "", "url": f"https://loinc.org/{lid}"})
 
-    for lid in loinc_ids:
-        url = f"https://loinc.org/{lid}"
-        name = loinc_map.get(lid, "") or ""
-        out_rows.append({"source": "LOINC", "id": lid, "name": name, "url": url})
-
-    os.makedirs(os.path.dirname(OUTPUT_CSV) or ".", exist_ok=True)
-    with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
+    # Write output
+    os.makedirs(os.path.dirname(OUTPUT_CSV_FINAL) or ".", exist_ok=True)
+    with open(OUTPUT_CSV_FINAL, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["source", "id", "name", "url"])
         w.writeheader()
         w.writerows(out_rows)
 
-    print(f"Wrote {len(out_rows)} rows -> {OUTPUT_CSV}")
+    # PRINT FINAL SUMMARY
+    print("\n" + "="*45)
+    print(f"{'ENRICHMENT SUMMARY':^45}")
+    print("="*45)
+    print(f"{'Source':<12} | {'Success':<10} | {'Failed':<10} | {'Total':<10}")
+    print("-" * 45)
+    for src, stats in results_tracker.items():
+        total = stats["success"] + stats["fail"]
+        print(f"{src:<12} | {stats['success']:<10} | {stats['fail']:<10} | {total:<10}")
+    print("="*45)
 
+def main():
+    start_t = time.time()
+    process_mrconso()
+    process_orphanet()
+    enrich_data()
+    print(f"\nPipeline completed in {time.time() - start_t:.2f} seconds.")
 
 if __name__ == "__main__":
     main()
