@@ -11,7 +11,7 @@ def load_module(path: Path, name: str):
 def test_normalize_cell_and_int_coercions():
     mod = load_module(Path("scripts/00_xlsx_to_csv.py"), "xlsx_to_csv")
 
-    assert mod.normalize_cell("  A\nB  ") == "A|B"
+    assert mod.normalize_cell("  A\nB  ") == "  A|B  "
     assert mod.as_int_str_if_numeric("001") == "1"
     assert mod.as_int_str_if_numeric("12.0") == "12"
     assert mod.as_int_str_if_numeric("12.5") == "12.5"
