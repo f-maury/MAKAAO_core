@@ -1,1 +1,4 @@
 plots_and_stats/
+__pycache__/
+.ruff_cache/
+.pytest_cache/
