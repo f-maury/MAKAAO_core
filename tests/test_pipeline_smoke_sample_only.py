@@ -37,7 +37,7 @@ def test_end_to_end_build_sample_kg(tmp_path):
 
     out_dir = tmp_path / "kg"
     out_dir.mkdir()
-    p3.OUTPUT_OWL_ENRICHED = str(out_dir / "makg-sample.rdf")
+    p3.OUTPUT_OWL_TBOX = str(out_dir / "makg-sample_ontology.owl")
 
     # run main; should tolerate missing enrichment tables
     p3.main()

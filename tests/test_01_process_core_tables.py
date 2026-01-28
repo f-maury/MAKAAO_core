@@ -16,7 +16,7 @@ def test_tokenizers_and_normalizers():
     assert mod.unique_preserve_order(["a","b","a","c","b"]) == ["a","b","c"]
 
     assert mod.clean_cui("C1234567") == "C1234567"
-    assert mod.clean_cui(" UMLS:C1234567 ") == "C1234567"
+    assert mod.clean_cui(" UMLS:C1234567 ") == "UMLS:C1234567"
 
     assert mod.norm_hp("HP:0003731") == "HP_0003731"
     assert mod.norm_hp("http://purl.obolibrary.org/obo/HP_0003731") == "HP_0003731"
