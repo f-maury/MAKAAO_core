@@ -17,6 +17,7 @@ BASE_DIR = "../data/processed_tables/"
 OUTPUT_DIR = "../data/"
 makaao_core_name = "../data/makaao_core.csv"
 OUTPUT_OWL_ENRICHED = f"../kg/makg-core_{version}.rdf"
+OUTPUT_OWL_TBOX = f"../kg/makg-core_{version}_ontology.owl"
 
 # Optional enrichment tables (all CSVs). Script tolerates their absence.
 UMLS_HPO_CSV = "../data/enrichment_tables/umls_hpo.csv"
@@ -27,7 +28,6 @@ ORPHANET_HPO_LINKS = "../data/enrichment_tables/orphanet_hpo_links.csv"
 LOINC_UMLS = "../data/enrichment_tables/umls_loinc.csv"
 LOINC_INDEX_CSV = os.path.join(BASE_DIR, "index_loinc.csv")
 CODE_NAMES_CSV = "../data/enrichment_tables/code_names.csv"
-# AAB_SNOMED_MAP   = "/path/to/aab_mak_snomed_match.csv"  # kept disabled as before
 
 # ===================== NAMESPACES =====================
 MAKAAO = Namespace("http://makaao.inria.fr/kg/")
@@ -1086,7 +1086,8 @@ def process_diseases(
                     elif key is None:
                         pos_inst = MAKAAO[f"{make_valid(str(pos_uri).split('/')[-1])}_instance"]
                     if key is not None:
-                        #print(key)
+                        # print(key)
+                        pass
                     g.add((pos_inst, RDF.type, pos_uri))
                     g.add((inst, SIO["SIO_001279"], pos_inst))  # has_phenotype
                     g.add((pos_inst, SIO["SIO_001280"], inst))  # is_phenotype_of
@@ -1290,6 +1291,52 @@ def append_fair_metadata(kg: Graph):
     kg.add((ONT, VOID.triples, Literal(len(kg)+1, datatype=XSD.integer)))
 
 
+
+
+# ===================== T-BOX EXPORT =====================
+def extract_tbox_local_only(source: Graph, local_ns: str) -> Graph:
+    """
+    Extract a T-box graph containing ONLY schema terms defined in the local namespace.
+
+    Included:
+      - triples where the subject is a local IRI (starts with local_ns) AND the subject is
+        declared as owl:Ontology / owl:Class / owl:ObjectProperty / owl:DatatypeProperty / owl:AnnotationProperty
+      - all outgoing triples from those local schema subjects
+      - recursively, any blank-node structures reachable from those triples (e.g., OWL restrictions)
+
+    Excluded:
+      - any triples whose subject is an external IRI (even if present in the KG),
+        including copied labels/types/subClassOf for external ontologies.
+    """
+    tbox = Graph()
+    tbox.namespace_manager = source.namespace_manager
+
+    schema_types = {
+        OWL.Ontology,
+        OWL.Class,
+        OWL.ObjectProperty,
+        OWL.DatatypeProperty,
+        OWL.AnnotationProperty,
+    }
+
+    seeds = set()
+    for s, o in source.subject_objects(RDF.type):
+        if o in schema_types and isinstance(s, URIRef) and str(s).startswith(local_ns):
+            seeds.add(s)
+
+    # Copy all triples about local schema subjects; include connected blank nodes (e.g., restrictions)
+    stack = list(seeds)
+    seen = set(seeds)
+    while stack:
+        s = stack.pop()
+        for _, p, o in source.triples((s, None, None)):
+            tbox.add((s, p, o))
+            if isinstance(o, BNode) and o not in seen:
+                seen.add(o)
+                stack.append(o)
+
+    return tbox
+
 # ===================== MAIN =====================
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -1392,14 +1439,19 @@ def main():
     )
     keep = data["indices"]
     process_loinc_mappings(g, LOINC_UMLS, LOINC_INDEX_CSV, keep)
-    # process_snomed_mappings(g, SNOMED_UMLS, AAB_SNOMED_MAP, keep)  # optional
 
     append_fair_metadata(g)
+
+    # Export ontology (T-box) separately (no instances)
+    tbox = extract_tbox_local_only(g, str(MAKAAO))
+    tbox.serialize(destination=OUTPUT_OWL_TBOX, format="xml")
+    print(f"Saved {OUTPUT_OWL_TBOX}  triples={len(tbox)}")
+
     g.serialize(
         destination=OUTPUT_OWL_ENRICHED, format="xml"
     )  #  we write the KG to an RDF file (XML syntax)
     print(f"Saved {OUTPUT_OWL_ENRICHED}  triples={len(g)}")
 
 
-if __name__ == "__main__":  # run main, if script is executed (not imported as a module)
+if __name__ == "__main__":  
     main()
