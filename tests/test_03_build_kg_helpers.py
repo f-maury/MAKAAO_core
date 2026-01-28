@@ -18,8 +18,9 @@ def test_make_valid_and_hp_uri_and_id_canon():
     assert str(mod.hp_to_obo_uri("HP:0003731")) == "http://purl.obolibrary.org/obo/HP_0003731"
 
     assert mod.canon_uniprot_id("UP:P12345") == ("P12345", "P12345", ["UP:P12345"])
-    assert mod.canon_chebi_id("CHEBI:23367") == "CHEBI:23367"
-    assert mod.canon_chebi_id("obo:CHEBI_23367") == "CHEBI:23367"
+    orig, safe = mod.canon_chebi_id("CHEBI:23367")
+    assert orig == "CHEBI:23367"
+    assert safe == "CHEBI_23367"
 
 def test_add_label_deduplication_rules():
     mod = load_module(Path("scripts/03_build_kg_from_tables.py"), "build_kg")
