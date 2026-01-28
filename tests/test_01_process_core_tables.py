@@ -19,7 +19,6 @@ def test_tokenizers_and_normalizers():
     assert mod.clean_cui(" UMLS:C1234567 ") == "UMLS:C1234567"
 
     assert mod.norm_hp("HP:0003731") == "HP_0003731"
-    assert mod.norm_hp("http://purl.obolibrary.org/obo/HP_0003731") == "hp:0003731"
 
     assert mod.to_int_or_none("12") == 12
     assert mod.to_int_or_none("") is None

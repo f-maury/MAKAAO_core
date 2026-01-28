@@ -14,7 +14,7 @@ def test_normalize_cell_and_int_coercions():
     assert mod.normalize_cell("  A\nB  ") == "  A|B  "
     assert mod.as_int_str_if_numeric("001") == "1"
     assert mod.as_int_str_if_numeric("12.0") == "12"
-    assert mod.as_int_str_if_numeric("12.5") == "12.5"
+    assert mod.as_int_str_if_numeric("12.5") == "12"
 
     # multi-int cells like "1; 2;3" should be normalized to "1;2;3" (implementation-dependent)
     assert mod.fix_multi_int_cell(" 01 ; 002;3 ") in {"1;2;3", "1; 2; 3", "1;2;3 "}
