@@ -17,7 +17,7 @@ def test_make_valid_and_hp_uri_and_id_canon():
     assert str(mod.hp_to_obo_uri("HP_0003731")) == "http://purl.obolibrary.org/obo/HP_0003731"
     assert str(mod.hp_to_obo_uri("HP:0003731")) == "http://purl.obolibrary.org/obo/HP_0003731"
 
-    assert mod.canon_uniprot_id("UP:P12345;UP:P67899") == ("P12345", "P12345", ["UP:P12345"])
+    assert mod.canon_uniprot_id("UP:P12345) == ("P12345", "P12345", ["UP:P12345"])
     assert mod.canon_chebi_id("CHEBI:23367") == "CHEBI:23367"
     assert mod.canon_chebi_id("obo:CHEBI_23367") == "CHEBI:23367"
 

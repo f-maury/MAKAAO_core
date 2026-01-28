@@ -19,6 +19,6 @@ def test_normalize_cell_and_int_coercions():
     # multi-int cells like "1; 2;3" should be normalized to "1;2;3" (implementation-dependent)
     assert mod.fix_multi_int_cell(" 01 ; 002;3 ") == "01 ; 002;3"
 
-    assert mod.coerce_nullable_int("") is None
-    assert mod.coerce_nullable_int("  ") is None
-    assert mod.coerce_nullable_int("12") == 12
+    assert mod.coerce_nullable_int("", "any_col") is None
+    assert mod.coerce_nullable_int("  ", "any_col") is None
+    assert mod.coerce_nullable_int("12", "any_col") == 12
