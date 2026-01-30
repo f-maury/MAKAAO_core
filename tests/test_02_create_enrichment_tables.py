@@ -22,14 +22,14 @@ class _DummyResp:
 
 
 def test_02_pipeline_runs_on_minimal_inputs(tmp_path, monkeypatch):
-    """
-    Runs the 02 script end-to-end on:
-      - a tiny MRCONSO.RRF (local UMLS map)
-      - a tiny Orphanet XML (orpha->hpo link table)
-      - a tiny makaao_core.csv (IDs to enrich)
-    while stubbing network lookups.
-    """
-    mod = load_module(Path("scripts/02_create_enrichment_tables.py"), "enrich02")
+   
+    script_path = Path("scripts/02_create_enrichment_tables.py")
+    if not script_path.exists():
+        script_path = Path("02_create_enrichment_tables.py")
+    if not script_path.exists():
+        script_path = Path("/mnt/data/02_create_enrichment_tables.py")
+    assert script_path.exists(), f"Cannot find 02 script at {script_path!s}"
+    mod = load_module(script_path, "enrich02")
 
     # Redirect all I/O to tmp_path/data
     data_dir = tmp_path / "data"
@@ -44,6 +44,7 @@ def test_02_pipeline_runs_on_minimal_inputs(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "OUT_ORPHA_LINKS", str(enrich_dir / "orphanet_hpo_links.csv"))
     monkeypatch.setattr(mod, "INPUT_CSV_CORE", str(data_dir / "makaao_core.csv"))
     monkeypatch.setattr(mod, "OUTPUT_CSV_FINAL", str(enrich_dir / "code_names.csv"))
+    monkeypatch.setattr(mod, "REPORT_PATH", str(enrich_dir / "enrichment_report.md"))
     monkeypatch.setattr(mod, "IN_PATH", str(data_dir / "MRCONSO.RRF"))
 
     # Stub network calls (UniProt / OLS / etc.)
@@ -53,11 +54,14 @@ def test_02_pipeline_runs_on_minimal_inputs(tmp_path, monkeypatch):
     # Need >= 18 fields, with:
     # parts[1]=="ENG", parts[2]=="P", parts[16]=="N", parts[0]=CUI, parts[14]=name
     parts = [""] * 18
-    parts[0] = "C0000005"
-    parts[1] = "ENG"
-    parts[2] = "P"
-    parts[14] = "Test Concept"
-    parts[16] = "N"
+    parts[0] = "C0000005"          # CUI
+    parts[1] = "ENG"               # LAT
+    parts[2] = "P"                 # TS (preferred)
+    parts[6] = "Y"                 # ISPREF
+    parts[11] = "HPO"              # SAB (must be in OPEN_UMLS_SABS allow-list)
+    parts[12] = "PT"               # TTY
+    parts[14] = "Test Concept"     # STR
+    parts[16] = "N"                # SUPPRESS
     (data_dir / "MRCONSO.RRF").write_text("|".join(parts) + "|\n", encoding="utf-8")
 
     # --- Minimal Orphanet XML (one disorder, one HPO association) ---
@@ -71,6 +75,9 @@ def test_02_pipeline_runs_on_minimal_inputs(tmp_path, monkeypatch):
           <HPOId>HP:0000001</HPOId>
           <HPOTerm>All</HPOTerm>
         </HPO>
+        <HPOFrequency>
+          <Name lang="en">Frequent</Name>
+        </HPOFrequency>
       </HPODisorderAssociation>
     </HPODisorderAssociationList>
   </Disorder>
