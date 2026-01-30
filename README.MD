@@ -25,19 +25,22 @@
    ```bash
    cd scripts
    python 00_xlsx_to_csv.py
+   python 01_process_makaao_core_to_tables.py
+   python 02_create_enrichment_tables.py
+   python 03_build_kg_from_tables.py
+   python 04_make_lite_graph_from_makaao-kg.py
    ```
-   ...
 
    4. If everything runs without issue:
       * MAKAAO KG and Lite KG will be located in `kg/` folder
       * Normalized tables will be in `data/processed_tables/`.
       * Enrichment tables will be in `data/enrichment_tables/`.
-
+---
 ## Annex
 * `tests/` contains the `shacl_shapes.ttl` file used by the GitHub CI workflow to validate some constraints on the knowledge graph.
+* `tests/` also contains the other unit tests used to check each script.
 * Sample data are located in `data/makaao_sample.csv`.
-
-
+---
 ## WARNING
 
 For licensing reasons, some files that you would need to correctly run the scripts are not included in this repository. These are:
