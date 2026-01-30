@@ -9,22 +9,67 @@ import re
 import time
 import requests
 from typing import Optional, Tuple, List
+from collections import Counter, defaultdict
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# --- CONFIGURATION ---
+# --- INPUT PATHS---
 # NOTE: Update IN_PATH to point to your local MRCONSO.RRF file
 IN_PATH = "/mnt/d/umls-2024AB-full_metamor/2024AB-full/2024AB/2024AB/META/MRCONSO.RRF"
-
-# File Paths
 DATA_DIR = "../data"
+XML_PATH = os.path.join(DATA_DIR, "en_product4.xml")
 ENRICH_DIR = os.path.join(DATA_DIR, "enrichment_tables")
+INPUT_CSV_CORE = os.path.join(DATA_DIR, "makaao_core.csv")
+
+# we pick names from some UMLS vocabularies only, the ones that we can reuse without copyright issue
+OPEN_UMLS_SABS_PRIORITY = [
+
+    # --- OBO Foundry / Open Ontologies ---
+    "HPO",      # Human Phenotype Ontology — CC BY 4.0
+    "MONDO",    # Mondo Disease Ontology — CC BY 4.0
+    "DOID",     # Disease Ontology — CC0
+    "GO",       # Gene Ontology — CC BY 4.0
+    "CHEBI",    # Chemical Entities of Biological Interest — CC BY 4.0
+    "SO",       # Sequence Ontology — open
+    "PATO",     # Phenotype and Trait Ontology — open
+    "CL",       # Cell Ontology — CC BY 4.0
+    "UBERON",   # Uberon anatomy ontology — CC BY 4.0
+    "PRO",      # Protein Ontology — open
+    "HPMP",     # HPO Mapping Project resources (if present)
+    "OMP",      # Ontology of Microbial Phenotypes — open
+    "EFO",      # Experimental Factor Ontology — CC BY
+    "OBI",      # Ontology for Biomedical Investigations — open
+    "NCBITAXON",# NCBI Taxonomy — public domain
+    "ENVO",     # Environment Ontology — CC BY
+    "FMAOBO",   # Foundational Model of Anatomy OBO subset (open part only)
+
+    # --- U.S. Government Public Domain ---
+    "MSH",      # MeSH — public domain (NLM)
+    "NCBI",     # NCBI Taxonomy (alternate SAB in some releases)
+    "RXNORM_EXT",# RxNorm extension terms that are UMLS-generated (not proprietary sources)
+    "MTH",      # UMLS Metathesaurus-generated editorial terms
+
+    # --- Open Clinical Terminologies ---
+    "LNC",      # LOINC — free terminology license (exclude SNOMED CT parts)
+    "UCUM",     # Unified Code for Units of Measure — open
+    "HGNC",     # HUGO Gene Nomenclature — open
+    "OMIM_MORBIDMAP",  # OMIM gene-disease map subset sometimes included (not full OMIM text)
+
+    # --- Public Classifications (core text only) ---
+    "ICD10",    # ICD-10 WHO core classification text
+    "ICD9CM",   # ICD-9-CM public classification text
+]
+
+OPEN_UMLS_SABS = set(OPEN_UMLS_SABS_PRIORITY)
+
+
+# UMLS  we prioritize some type of UMLS terms
+PREFERRED_TTYS = {"PT", "PN", "MH"}  # Preferred Term, Preferred Name, MeSH Heading (extend if needed)
 
 # Final output files
-XML_PATH = os.path.join(DATA_DIR, "en_product4.xml")
 OUT_ORPHA_LINKS = os.path.join(ENRICH_DIR, "orphanet_hpo_links.csv")
-INPUT_CSV_CORE = os.path.join(DATA_DIR, "makaao_core.csv")
 OUTPUT_CSV_FINAL = os.path.join(ENRICH_DIR, "code_names.csv")
+REPORT_PATH = os.path.join(ENRICH_DIR, "enrichment_report.md")
 
 # API URLs
 UNIPROT_JSON_URL = "https://rest.uniprot.org/uniprotkb/{acc}"
@@ -33,6 +78,8 @@ HEADERS = {"Accept": "application/json"}
 
 # Global storage for in-memory mapping and tracking
 umls_names_map = {}
+# Metadata for the chosen UMLS name per CUI (e.g., SAB, preferred vs synonym)
+umls_name_meta = {}
 results_tracker = {
     "UniProt": {"success": 0, "fail": 0},
     "ORPHA": {"success": 0, "fail": 0},
@@ -41,7 +88,7 @@ results_tracker = {
     "LOINC": {"success": 0, "fail": 0}
 }
 
-# Increase CSV field size limit
+# Increase CSV field size limit (MRCONSO.RRF is a big file with long fields)
 _lim = sys.maxsize
 while True:
     try:
@@ -59,19 +106,69 @@ def process_mrconso():
         return
 
     os.makedirs(ENRICH_DIR, exist_ok=True)
-    count = 0
+
+    # Best candidate per CUI among *allowed* sources.
+    # We select by:
+    #   1) preferred term (ISPREF=Y OR TS=P OR TTY in PREFERRED_TTYS)
+    #   2) vocabulary priority (OPEN_UMLS_SABS_PRIORITY order)
+    #   3) shorter label (tie-breaker)
+    best = {}  # cui -> (pref_order, sab_rank, strlen, label, sab, preferred_flag)
+
+    total_rows = 0
+    considered = 0
+    skipped_non_open = 0
+
     with open(IN_PATH, "r", encoding="utf-8", errors="replace", newline="") as fin:
         reader = csv.reader(fin, delimiter="|")
         for parts in reader:
+            total_rows += 1
             if len(parts) < 18:
                 continue
-            # Filter for English Preferred names
-            if parts[1] == "ENG" and parts[2] == "P" and parts[16] == "N":
-                cui, name = parts[0], parts[14]
-                if cui not in umls_names_map:
-                    umls_names_map[cui] = name
-                    count += 1
-    print(f"Part 1: Loaded {count} UMLS names into memory.")
+
+            lat = parts[1]
+            ts = parts[2]
+            ispref = parts[6]
+            sab = parts[11]
+            tty = parts[12]
+            cui = parts[0]
+            label = parts[14]
+            suppress = parts[16]
+
+            # English, unsuppressed only
+            if lat != "ENG" or suppress != "N":
+                continue
+
+            # Enforce open/redistributable allow-list
+            if sab not in OPEN_UMLS_SABS:
+                skipped_non_open += 1
+                continue
+
+            considered += 1
+            preferred_flag = (ispref == "Y") or (ts == "P") or (tty in PREFERRED_TTYS)
+
+            pref_order = 0 if preferred_flag else 1  # lower is better
+            sab_rank = OPEN_UMLS_SABS_PRIORITY.index(sab) if sab in OPEN_UMLS_SABS_PRIORITY else len(OPEN_UMLS_SABS_PRIORITY)
+            strlen = len(label or "")
+
+            cand = (pref_order, sab_rank, strlen, label, sab, preferred_flag)
+
+            cur = best.get(cui)
+            if cur is None or cand < cur:
+                best[cui] = cand
+
+    # Materialize mapping and metadata
+    for cui, (_pref_order, _sab_rank, _strlen, label, sab, preferred_flag) in best.items():
+        umls_names_map[cui] = label
+        umls_name_meta[cui] = {"sab": sab, "preferred": bool(preferred_flag)}
+
+    print(
+        "Part 1: Loaded "
+        f"{len(umls_names_map)} UMLS names into memory "
+        f"(considered {considered} rows; skipped {skipped_non_open} non-open rows; scanned {total_rows} rows)."
+    )
+    if OPEN_UMLS_SABS_PRIORITY:
+        print(f"Part 1: Allowed UMLS vocabularies (SAB) for naming: {', '.join(OPEN_UMLS_SABS_PRIORITY)}")
+
 
 
 # --- PART 2: PROCESS ORPHANET XML ---
@@ -135,7 +232,7 @@ def process_orphanet():
         print(f"Error in Orphanet processing: {e}")
 
 
-# --- PART 3: ENRICHMENT & TRACKING ---
+# --- PART 3: ENRICHMENT USING APIS FOR WHA WAS NOT IN MRCONSO -----
 def req_get(url: str, params: Optional[dict] = None) -> Optional[requests.Response]:
     for i in range(3):
         try:
@@ -217,6 +314,77 @@ def chebi_name(num: str) -> Tuple[Optional[str], str]:
         return (terms[0].get("label") if terms else None), page
     except: return None, page
 
+def write_report(
+    report_path: str,
+    runtime_seconds: float,
+    used_umls_sabs: Counter,
+    failed_ids: dict,
+    results_tracker_snapshot: dict,
+    output_csv: str,
+    output_orpha_links: str,
+):
+    ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    lines = []
+    lines.append("# Enrichment report")
+    lines.append("")
+    lines.append(f"- Run timestamp: {ts}")
+    lines.append(f"- Runtime (seconds): {runtime_seconds:.2f}")
+    lines.append("")
+    lines.append("## Inputs and outputs")
+    lines.append("")
+    lines.append(f"- MRCONSO.RRF: `{IN_PATH}`")
+    lines.append(f"- Core CSV: `{INPUT_CSV_CORE}`")
+    lines.append(f"- Orphanet XML: `{XML_PATH}`")
+    lines.append(f"- Output (Orphanet-HPO links): `{output_orpha_links}`")
+    lines.append(f"- Output (code names): `{output_csv}`")
+    lines.append("")
+    lines.append("## Vocabulary policy (UMLS CUI naming)")
+    lines.append("")
+    lines.append("- Allowed UMLS vocabularies (SAB): " + (", ".join(OPEN_UMLS_SABS_PRIORITY) if OPEN_UMLS_SABS_PRIORITY else "(none)"))
+    lines.append("")
+    if used_umls_sabs:
+        lines.append("### UMLS vocabularies actually used (SAB → #CUIs named)")
+        lines.append("")
+        for sab, n in used_umls_sabs.most_common():
+            lines.append(f"- {sab}: {n}")
+        lines.append("")
+    else:
+        lines.append("### UMLS vocabularies actually used")
+        lines.append("")
+        lines.append("- (none)")
+        lines.append("")
+
+    lines.append("## Resolution summary")
+    lines.append("")
+    lines.append("| Source | Success | Failed | Total |")
+    lines.append("|---|---:|---:|---:|")
+    for src, stats in results_tracker_snapshot.items():
+        total = stats["success"] + stats["fail"]
+        lines.append(f"| {src} | {stats['success']} | {stats['fail']} | {total} |")
+    lines.append("")
+
+    lines.append("## Missing names (by source)")
+    lines.append("")
+    for src, ids in failed_ids.items():
+        if not ids:
+            continue
+        lines.append(f"### {src} ({len(ids)} identifiers)")
+        lines.append("")
+        # Keep the report compact
+        max_show = 200
+        shown = ids[:max_show]
+        lines.append("```")
+        lines.extend(shown)
+        if len(ids) > max_show:
+            lines.append(f"... ({len(ids) - max_show} more)")
+        lines.append("```")
+        lines.append("")
+
+    os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
 def enrich_data():
     print("Starting enrichment process...")
     if not os.path.exists(INPUT_CSV_CORE):
@@ -257,14 +425,23 @@ def enrich_data():
 
     out_rows = []
 
+    # Track identifiers with no resolved name, per source
+    failed_ids = {k: [] for k in results_tracker.keys()}
+
     # UMLS local lookup
     print(f"Resolving {len(cui_ids)} UMLS IDs (local memory)...")
+    used_umls_sabs = Counter()
     for c in cui_ids:
         name = umls_names_map.get(c)
-        if name: results_tracker["UMLS"]["success"] += 1
+        if name:
+            results_tracker["UMLS"]["success"] += 1
+            meta = umls_name_meta.get(c) or {}
+            if meta.get("sab"):
+                used_umls_sabs[meta["sab"]] += 1
         else:
             results_tracker["UMLS"]["fail"] += 1
-            print(f"[UNSUCCESSFUL] UMLS ID: {c} - Not found in MRCONSO map.")
+            failed_ids["UMLS"].append(c)
+            print(f"[UNSUCCESSFUL] UMLS ID: {c} - Not found (or excluded by OPEN_UMLS_SABS).")
         out_rows.append({"source": "UMLS", "id": c, "name": name or "", "url": f"https://uts.nlm.nih.gov/uts/umls/concept/{c}"})
 
     # Concurrent remote lookup
@@ -279,20 +456,25 @@ def enrich_data():
             source, raw_id = future_to_item[future]
             try:
                 name, url = future.result()
-                if name: results_tracker[source]["success"] += 1
+                if name:
+                    results_tracker[source]["success"] += 1
                 else:
                     results_tracker[source]["fail"] += 1
+                    failed_ids[source].append(raw_id)
                     print(f"[UNSUCCESSFUL] {source} ID: {raw_id} - API returned no name.")
                 out_rows.append({"source": source, "id": raw_id, "name": name or "", "url": url})
             except Exception as e:
                 results_tracker[source]["fail"] += 1
+                failed_ids[source].append(raw_id)
                 print(f"[ERROR] {source} ID: {raw_id} - {e}")
 
     # LOINC local resolution
     for lid, name in loinc_map.items():
-        if name: results_tracker["LOINC"]["success"] += 1
+        if name:
+            results_tracker["LOINC"]["success"] += 1
         else:
             results_tracker["LOINC"]["fail"] += 1
+            failed_ids["LOINC"].append(lid)
             print(f"[UNSUCCESSFUL] LOINC ID: {lid} - No name found in core CSV.")
         out_rows.append({"source": "LOINC", "id": lid, "name": name or "", "url": f"https://loinc.org/{lid}"})
 
@@ -314,7 +496,37 @@ def enrich_data():
         print(f"{src:<12} | {stats['success']:<10} | {stats['fail']:<10} | {total:<10}")
     print("="*45)
 
+    # Write a machine-readable report (Markdown) capturing the run and missing identifiers
+    runtime_seconds = time.time() - start_t if "start_t" in globals() else 0.0
+    write_report(
+        report_path=REPORT_PATH,
+        runtime_seconds=runtime_seconds,
+        used_umls_sabs=used_umls_sabs,
+        failed_ids=failed_ids,
+        results_tracker_snapshot=results_tracker,
+        output_csv=OUTPUT_CSV_FINAL,
+        output_orpha_links=OUT_ORPHA_LINKS,
+    )
+    print(f"Report written to {REPORT_PATH}")
+
+    # Short on-screen report of missing identifiers (kept compact)
+    any_missing = any(bool(v) for v in failed_ids.values())
+    if any_missing:
+        print("\nMissing identifiers (counts; first 10 shown per source):")
+        for src, ids in failed_ids.items():
+            if not ids:
+                continue
+            preview = ", ".join(ids[:10])
+            more = f" (+{len(ids) - 10} more)" if len(ids) > 10 else ""
+            print(f"- {src}: {len(ids)} [{preview}]{more}")
+
+    if used_umls_sabs:
+        print("\nUMLS vocabularies actually used for naming (SAB → #CUIs):")
+        for sab, n in used_umls_sabs.most_common():
+            print(f"- {sab}: {n}")
+
 def main():
+    global start_t
     start_t = time.time()
     process_mrconso()
     process_orphanet()
