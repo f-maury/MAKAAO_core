@@ -80,11 +80,14 @@ HEADERS = {"Accept": "application/json"}
 umls_names_map = {}
 # Metadata for the chosen UMLS name per CUI (e.g., SAB, preferred vs synonym)
 umls_name_meta = {}
+# HPO names from MRCONSO (HPO CODE -> preferred label)
+hpo_names_map = {}
 results_tracker = {
     "UniProt": {"success": 0, "fail": 0},
     "ORPHA": {"success": 0, "fail": 0},
     "ChEBI": {"success": 0, "fail": 0},
     "UMLS": {"success": 0, "fail": 0},
+    "HPO": {"success": 0, "fail": 0},
     "LOINC": {"success": 0, "fail": 0}
 }
 
@@ -113,6 +116,7 @@ def process_mrconso():
     #   2) vocabulary priority (OPEN_UMLS_SABS_PRIORITY order)
     #   3) shorter label (tie-breaker)
     best = {}  # cui -> (pref_order, sab_rank, strlen, label, sab, preferred_flag)
+    best_hpo = {}  # hpo_id -> (pref_order, strlen, label)
 
     total_rows = 0
     considered = 0
@@ -130,6 +134,7 @@ def process_mrconso():
             ispref = parts[6]
             sab = parts[11]
             tty = parts[12]
+            code = parts[13]
             cui = parts[0]
             label = parts[14]
             suppress = parts[16]
@@ -156,14 +161,26 @@ def process_mrconso():
             if cur is None or cand < cur:
                 best[cui] = cand
 
+            # Also build a direct HPO CODE -> label map from MRCONSO
+            if sab == "HPO":
+                hpo_id = norm_hpo(code)
+                if hpo_id:
+                    hpo_cand = (pref_order, strlen, label)
+                    hcur = best_hpo.get(hpo_id)
+                    if hcur is None or hpo_cand < hcur:
+                        best_hpo[hpo_id] = hpo_cand
+
     # Materialize mapping and metadata
     for cui, (_pref_order, _sab_rank, _strlen, label, sab, preferred_flag) in best.items():
         umls_names_map[cui] = label
         umls_name_meta[cui] = {"sab": sab, "preferred": bool(preferred_flag)}
 
+    for hpo_id, (_pref_order, _strlen, label) in best_hpo.items():
+        hpo_names_map[hpo_id] = label
+
     print(
         "Part 1: Loaded "
-        f"{len(umls_names_map)} UMLS names into memory "
+        f"{len(umls_names_map)} UMLS names and {len(hpo_names_map)} HPO names into memory "
         f"(considered {considered} rows; skipped {skipped_non_open} non-open rows; scanned {total_rows} rows)."
     )
     if OPEN_UMLS_SABS_PRIORITY:
@@ -275,6 +292,27 @@ def norm_loinc_part(x: str) -> Optional[str]:
     x = (x or "").strip().upper()
     m = re.fullmatch(r"LP\d+(?:-\d+)?", x)
     return m.group(0) if m else None
+
+def norm_hpo(x: str) -> Optional[str]:
+    s = (x or "").strip()
+    if not s:
+        return None
+    # Handle OBO PURL forms
+    if s.startswith("http://purl.obolibrary.org/obo/"):
+        s = s.rsplit("/", 1)[-1]
+    s = s.replace("_", ":").upper()
+
+    # Accepted forms: HP:0000001 / HP0000001 / 0000001
+    m = re.fullmatch(r"HP:(\d{7})", s)
+    if m:
+        return f"HP:{m.group(1)}"
+    m = re.fullmatch(r"HP(\d{7})", s)
+    if m:
+        return f"HP:{m.group(1)}"
+    m = re.fullmatch(r"(\d{7})", s)
+    if m:
+        return f"HP:{m.group(1)}"
+    return None
 
 # Resolvers
 def uniprot_name(acc: str) -> Tuple[Optional[str], str]:
@@ -419,9 +457,20 @@ def enrich_data():
     cui_ids = sorted({v for v in (norm_umls(x) for x in cui_list) if v} | set(umls_from_dis))
     chebi_ids = sorted({v for v in (norm_chebi(x) for x in chebi_list) if v})
     orpha_ids = sorted(set(orpha_from_dis))
+    hpo_ids_from_orpha = set()
     if os.path.exists(OUT_ORPHA_LINKS):
         df_orpha = pd.read_csv(OUT_ORPHA_LINKS)
-        orpha_ids = sorted(set(orpha_ids) | set(df_orpha['orpha_code'].str.split('_').str[-1]))
+
+        # ORPHA ids from links
+        if "orpha_code" in df_orpha.columns:
+            orpha_ids = sorted(set(orpha_ids) | set(df_orpha["orpha_code"].astype(str).str.split("_").str[-1]))
+
+        # HPO ids linked to ORPHA codes of interest
+        if "HPOId" in df_orpha.columns:
+            for raw in df_orpha["HPOId"].dropna().astype(str):
+                hid = norm_hpo(raw)
+                if hid:
+                    hpo_ids_from_orpha.add(hid)
 
     out_rows = []
 
@@ -443,6 +492,24 @@ def enrich_data():
             failed_ids["UMLS"].append(c)
             print(f"[UNSUCCESSFUL] UMLS ID: {c} - Not found (or excluded by OPEN_UMLS_SABS).")
         out_rows.append({"source": "UMLS", "id": c, "name": name or "", "url": f"https://uts.nlm.nih.gov/uts/umls/concept/{c}"})
+
+    # HPO local lookup from MRCONSO, using HP terms linked to selected ORPHA codes
+    hpo_ids = sorted(hpo_ids_from_orpha)
+    print(f"Resolving {len(hpo_ids)} HPO IDs (local MRCONSO memory)...")
+    for hid in hpo_ids:
+        name = hpo_names_map.get(hid)
+        if name:
+            results_tracker["HPO"]["success"] += 1
+        else:
+            results_tracker["HPO"]["fail"] += 1
+            failed_ids["HPO"].append(hid)
+            print(f"[UNSUCCESSFUL] HPO ID: {hid} - Not found in MRCONSO (SAB=HPO).")
+        out_rows.append({
+            "source": "HPO",
+            "id": hid,
+            "name": name or "",
+            "url": f"http://purl.obolibrary.org/obo/{hid.replace(':', '_')}",
+        })
 
     # Concurrent remote lookup
     print("Resolving external IDs concurrently...")
