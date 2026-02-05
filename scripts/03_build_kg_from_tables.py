@@ -395,7 +395,7 @@ def add_reified_relation(g, subj, pred, obj, prov_str):
         ]  # otherwise we create a new instance of Document, and we construct its URI based on the number of documents already known
         document_map[prov] = doc  # we add that new document to the document map
         g.add((doc, RDF.type, MAKAAO.Document))
-        add_label(g, doc, RDFS.label, prov)  # the label of the docment is its provenance URI
+        g.add((doc, OBO.xref, URIRef(prov)))  # the label of the docment is its provenance URI
 
     # check if the object of the relations is an individual or a literal, so we characterize it correctly
     obj_node = obj if isinstance(obj, (URIRef, BNode, Literal)) else Literal(obj)
@@ -825,7 +825,7 @@ def build_core(
                 "CUI:", ""
             )  # for each CUI associated to this aab_id
             cui_uri = URIRef(
-                MAKAAO + cui_key + "_instance"
+                MAKAAO + "CUI_" + cui_key + "_instance"
             )  # we create the URI of the CUI instanceS
             g.add((cui_uri, RDF.type, MAKAAO.Target))
             g.add((cui_uri, OBO.xref, UMLS[cui_key])) # we create a instance of the Target class with the relevant CUI as URI
@@ -846,7 +846,6 @@ def build_core(
                 add_label(
                     g, cui_uri, RDFS.label, n
                 )  # we add all the other names as rdfs:labels
-            add_label(g, cui_uri, RDFS.label, cui_key)
             g.add(
                 (inst_aab, BAO.BAO_0000211, cui_uri)
             )  # we add relations between target instance and AAb instance
@@ -964,9 +963,7 @@ def build_core(
 def process_diseases(
     g,
     data,
-    umls_orphanet_by_cui,
     umls_orphanet_by_code,
-    umls_snomed_by_cui,
     umls_names,
     orpha_hpo_links,
     umls_cn_names,
@@ -1113,7 +1110,8 @@ def process_diseases(
             elif code_upper.startswith("C"):  # if current disease code is a CUI:
                 code_norm = code_upper.replace("CUI:", "").strip()
                 cui_uri = URIRef(UMLS + code_norm)  # reconstruct UMLS URI from code
-                inst = cui_uri
+                makaao_cui_uri = URIRef(MAKAAO + "CUI_" + code_norm + "_instance")
+                inst = makaao_cui_uri
                 preferred = (umls_cn_names or {}).get(
                     code_norm
                 )  # get preferred english label from code_names table, if it's there
@@ -1121,23 +1119,23 @@ def process_diseases(
                     umls_names.get(code_norm) or []
                 )  # as 2nd option, get preferred eglish name from umls_names table, if it's there
                 if preferred:
-                    add_pref(g, cui_uri, preferred)
+                    add_pref(g, inst, preferred)
                 elif all_umls_labels:
-                    add_pref(g, cui_uri, all_umls_labels[0])
+                    add_pref(g, inst, all_umls_labels[0])
                 else:
                     add_pref(
-                        g, cui_uri, code_norm
+                        g, inst, code_norm
                     )  # otherwise we add the code as a prefLabel, if we didn't get an english name
                 for n in (
                     all_umls_labels
                 ):  # we add all the labels we found as regular labels
-                    add_label(g, cui_uri, RDFS.label, n)
-                add_label(g, cui_uri, RDFS.label, code_norm)
+                    add_label(g, inst, RDFS.label, n)
+                g.add((inst, OBO.xref, cui_uri))
 
-            # last case, if code is not a properly formatted orpha or CUI code, we just create a generic UMLS instance with the code as label
+            # last case, if code is not a properly formatted orpha or CUI code, we just create a generic instance with the code as label
             else:
                 code_norm = code_upper.replace("CUI:", "").strip()
-                inst = URIRef(UMLS + code_norm)
+                inst = URIRef(MAKAAO + code_norm + "_instance")
                 add_pref(g, inst, code_upper)
 
             if inst is None:
@@ -1430,9 +1428,7 @@ def main():
     process_diseases(
         g,
         data,
-        orpha_by_cui,
         orpha_by_code,
-        snomed_by_cui,
         umls_names,
         orpha_hpo_links,
         umls_cn_names,
