@@ -1,4 +1,4 @@
-[![91.67 % FAIR](https://img.shields.io/badge/FAIR_assessment-91.67_%25-green)](https://fair-checker.france-bioinformatique.fr/assessment/6a549b9b7d55077778fe0938)
+[![87.50 % FAIR](https://img.shields.io/badge/FAIR_assessment-87.50_%25-green)](https://fair-checker.france-bioinformatique.fr/assessment/6a3cc8bf73c04470e997f4c4)
 ![Version](https://img.shields.io/badge/version-1.0.1-blue) 
 [![codecov](https://codecov.io/gh/f-maury/MAKAAO_core/branch/main/graph/badge.svg)](https://codecov.io/gh/f-maury/MAKAAO_core)
 ![SHACL Validation](https://github.com/f-maury/MAKAAO_core/actions/workflows/shacl_validation.yml/badge.svg)
