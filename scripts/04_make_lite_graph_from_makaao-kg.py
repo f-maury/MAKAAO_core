@@ -3,8 +3,12 @@ from rdflib import Graph, Namespace, URIRef, RDF, RDFS, OWL
 from rdflib.namespace import SKOS
 
 # ---- Paths ----
-IN_PATH = "../kg/makg-core_v1.rdf"
-OUT_PATH = "../kg/makg-core_v1_simplified.rdf"
+version = "1.0.2"
+IN_PATH = f"../kg/makg-core_{version}.rdf"
+OUT_PATH = f"../kg/makg-core_lite_{version}.rdf"
+
+#IN_PATH = f"../kg/makaao_kg_sample.rdf"
+#OUT_PATH = f"../kg/makaao_kg_lite_sample.rdf"
 
 # ---- Namespaces ----
 MAK = Namespace("http://makaao.inria.fr/kg/")

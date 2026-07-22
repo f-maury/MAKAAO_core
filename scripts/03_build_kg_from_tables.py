@@ -12,7 +12,7 @@ from datetime import date
 
 # ===================== CONFIG =====================
 
-version = "1.0.0"
+version = "1.0.2" #from makaao_core_21-07-2026.xlsx
 BASE_DIR = "../data/processed_tables/"
 OUTPUT_DIR = "../data/"
 makaao_core_name = "../data/makaao_core.csv"
@@ -20,12 +20,7 @@ OUTPUT_OWL_ENRICHED = f"../kg/makg-core_{version}.rdf"
 OUTPUT_OWL_TBOX = f"../kg/makg-core_{version}_ontology.owl"
 
 # Optional enrichment tables (all CSVs). Script tolerates their absence.
-UMLS_HPO_CSV = "../data/enrichment_tables/umls_hpo.csv"
-UMLS_ORPHANET_CSV = "../data/enrichment_tables/umls_orphanet.csv"
-UMLS_SNOMED_CSV = "../data/enrichment_tables/umls_snomed.csv"
-UMLS_NAMES_CSV = "../data/enrichment_tables/umls_names.csv"
 ORPHANET_HPO_LINKS = "../data/enrichment_tables/orphanet_hpo_links.csv"
-LOINC_UMLS = "../data/enrichment_tables/umls_loinc.csv"
 LOINC_INDEX_CSV = os.path.join(BASE_DIR, "index_loinc.csv")
 CODE_NAMES_CSV = "../data/enrichment_tables/code_names.csv"
 
@@ -66,19 +61,16 @@ _label_seen = defaultdict(
     }
 )
 
-
 def ensure_uriref(val):  # small function to make sure a string is an URI
     if not val:
         return None  # Or raise an error
     return URIRef(val)
-
 
 # normalize labels
 def _norm_label_text(t: str) -> str:
     return (
         re.sub(r"\s+", " ", (t or "")).strip().casefold()
     )  # normalize whitespace and case
-
 
 def add_label(g: Graph, node, prop, text: str) -> bool:
     """
@@ -107,19 +99,16 @@ def add_label(g: Graph, node, prop, text: str) -> bool:
     seen["any"].add(t)
     return True  # returns True if label was added
 
-
 def add_pref(g: Graph, node, text) -> bool:
     """Attach both prefLabel and rdfs:label with the cross-duplicate rule above."""
     ok1 = add_label(g, node, SKOS.prefLabel, text)
     ok2 = add_label(g, node, RDFS.label, text)
     return ok1 or ok2  # returns True if at least one label was added
 
-
 # Regex to parse simple "PMID: 12345" tokens.
 pmid_rx = re.compile(
     r"^\s*PMID\s*:\s*(\d+)\s*$", re.IGNORECASE
 )  # matches "PMID: 12345" format
-
 
 # ===================== IO / SMALL UTILS =====================
 def read_csv_rows(path):
@@ -143,7 +132,6 @@ def read_csv_rows(path):
             out.append(row)
         return out  # returns list of dicts representing CSV rows
 
-
 # groups dicts in lists by a key they share. returns a dict of lists of dict
 def grouped(rows, key):
     g = defaultdict(list)
@@ -152,7 +140,6 @@ def grouped(rows, key):
         if k:
             g[k].append(r)
     return g  # returns dict {key: [row_dict, ...]}
-
 
 # get the first occurrence of key/value pair from 2 columns
 def read_one_map(rows, key, valkey):
@@ -163,7 +150,6 @@ def read_one_map(rows, key, valkey):
         if k and v and k not in out:
             out[k] = v
     return out  # returns dict {key: val} of first occurrences
-
 
 def to_pubmed_urls(text, *, src_file=None, row=None, col=None):
     """
@@ -211,7 +197,6 @@ def to_pubmed_urls(text, *, src_file=None, row=None, col=None):
             keep.append(u)
     return keep  # returns list of unique pubmed URLs
 
-
 def make_valid(s):
     return (
         (s or "")
@@ -221,13 +206,44 @@ def make_valid(s):
         .replace("|", "_")
     )  # make string safe for URI use
 
+def canonical_hpo_code(hp_code):
+    """Normalize many HPO formats to HP:NNNNNNN."""
+    s = (hp_code or "").strip()
+    if not s:
+        return None
+    if s.lower().startswith("http"):
+        s = s.rsplit("/", 1)[-1].split("?")[0].split("#")[0]
+    s = s.replace("_", ":").upper()
+    m = re.search(r"HP:(\d{7})", s)
+    if m:
+        return f"HP:{m.group(1)}"
+    m = re.search(r"HP(\d{7})", s)
+    if m:
+        return f"HP:{m.group(1)}"
+    m = re.search(r"(\d{7})", s)
+    if m:
+        return f"HP:{m.group(1)}"
+    return None
+
+def split_hpo_values(cell):
+    """Split a cell that may contain 0/1/N HPO IDs separated by | , ; or whitespace."""
+    txt = (cell or "").strip()
+    if not txt:
+        return []
+    parts = [p.strip() for p in re.split(r"[|,;\s]+", txt) if p.strip()]
+    out, seen = [], set()
+    for p in parts:
+        c = canonical_hpo_code(p)
+        if c and c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
 
 def hp_to_obo_uri(hp_code):
-    if not hp_code:
+    c = canonical_hpo_code(hp_code)
+    if not c:
         return None
-    c = hp_code.strip().upper().replace(":", "_")
-    return URIRef(f"http://purl.obolibrary.org/obo/{c}")  # returns HP OBO URI
-
+    return URIRef(f"http://purl.obolibrary.org/obo/{c.replace(':', '_')}")  # returns HP OBO URI
 
 # ===================== UniProt / ChEBI HELPERS =====================
 # this removes uniprot prefix (UP:) and raises error if not present
@@ -236,7 +252,6 @@ def _strip_prefixes(s):
     if s.upper().startswith("UP:"):
         return s[3:]
     raise ValueError(f"Expected 'UP:' prefix, got: {s!r}")
-
 
 def canon_uniprot_id(val):
     s = (val or "").strip()
@@ -270,9 +285,7 @@ def canon_uniprot_id(val):
         sorted(a for a in alts if a),
     )  # returns uniprot base, uniprot full, [alt ids]
 
-
 _chebi_num_rx = re.compile(r"(\d+)$")
-
 
 def canon_chebi_id(val):
     s = (val or "").strip()
@@ -290,9 +303,17 @@ def canon_chebi_id(val):
     num = m.group(1)
     return f"CHEBI:{num}", f"CHEBI_{num}"  # returns (CHEBI:nnnnn, CHEBI_nnnnn)
 
+def canonical_cui_code(val):
+    """Normalize common CUI formats to C########."""
+    s = (val or "").strip().upper()
+    if not s:
+        return None
+    if s.startswith("HTTP"):
+        s = s.rsplit("/", 1)[-1].split("?")[0].split("#")[0]
+    m = re.search(r"C\d{7,8}", s)
+    return m.group(0) if m else None
 
 # ===================== code_names.csv READERS =====================
-
 
 # build uniprot lookup table from reading csv
 def read_code_names_uniprot(path):
@@ -320,7 +341,6 @@ def read_code_names_uniprot(path):
                 id2url[uid] = url
     return id2name, id2url  # 2 dicts: UniProt ID -> name, UniProt ID -> url
 
-
 def read_code_names_umls(path):
     id2name, id2url = {}, {}
     rows = read_csv_rows(path)
@@ -342,7 +362,7 @@ def read_code_names_orpha(path):
     rows = read_csv_rows(path)
     for r in rows:
         src = (r.get("source") or "").strip().lower()
-        if "orpha" not in src and src != "che":
+        if "orpha" not in src:
             continue
         raw = (r.get("id") or "").strip()
         nm = (r.get("name") or "").strip()
@@ -354,7 +374,6 @@ def read_code_names_orpha(path):
             id2url[code_colon] = url
 
     return id2name, id2url
-
 
 def read_code_names_chebi(path):
     id2name, id2url = {}, {}
@@ -374,6 +393,24 @@ def read_code_names_chebi(path):
 
     return id2name, id2url  # 2 dicts: CHeBI code -> name, CHeBI code -> url
 
+def read_code_names_hpo(path):
+    id2name, id2url = {}, {}
+    rows = read_csv_rows(path)
+    for r in rows:
+        src = (r.get("source") or "").strip().lower()
+        if src != "hpo":
+            continue
+        raw = (r.get("id") or "").strip()
+        nm = (r.get("name") or "").strip()
+        url = (r.get("url") or "").strip()
+        code = canonical_hpo_code(raw)
+        if not code:
+            continue
+        if nm and code not in id2name:
+            id2name[code] = nm
+        if url and code not in id2url:
+            id2url[code] = url
+    return id2name, id2url  # 2 dicts: HPO code -> name, HPO code -> url
 
 # ===================== REIFICATION =====================
 def add_reified_relation(g, subj, pred, obj, prov_str):
@@ -430,37 +467,7 @@ def add_reified_relation(g, subj, pred, obj, prov_str):
         (rel, PROV.wasDerivedFrom, doc)
     )  # we add the provenance information to the reified relation
 
-
 # ===================== ENRICHMENT HELPERS =====================
-def umls_names_index(path):  # read UMLS names CSV table into dict CUI -> [names]
-    rows = read_csv_rows(path)
-    names = defaultdict(list)
-    for r in rows:
-        cui = (r.get("CUI") or "").strip()
-        s = (r.get("STR") or "").strip()
-        if cui and s:
-            names[cui].append(s)
-    return names
-
-
-def umls_code_group(
-    path, key="CUI"
-):  # read UMLS code names table into two dicts grouped by key and by CODE
-    def canon_row(row: dict) -> dict:
-        out = {}
-        for k, v in row.items():
-            ku = k.upper()
-            if ku not in out or k.isupper():
-                out = {**out, ku: v.strip() if isinstance(v, str) else v}
-        return out
-
-    rows = [canon_row(r) for r in read_csv_rows(path)]
-    k = key.upper()
-    by_key = grouped(rows, k)
-    by_code = grouped(rows, "CODE")
-    return by_key, by_code
-
-
 # ===================== GRAPH BUILDERS =====================
 def init_graph():  # start an empty knowledge graph and add a few basic things to it
     g = Graph()
@@ -534,7 +541,6 @@ def init_graph():  # start an empty knowledge graph and add a few basic things t
     GLOBAL_ACTIVITY = act
     return g  # returned initialized KG
 
-
 # read data from the processed tables, and return it structured in acomplex dictionary
 def load_processed_tables(base_dir):
     parents_path = os.path.join(base_dir, "index_parent_index.csv")
@@ -587,9 +593,12 @@ def load_processed_tables(base_dir):
         idx = (r.get("index") or "").strip()
         if idx not in KEEP:
             continue
-        hp = (r.get("hpo_id") or "").strip()
-        if idx and hp and hp not in hpo_by_idx[idx]:
-            hpo_by_idx[idx].append(hp)
+        hp_raw = (r.get("hpo_id") or r.get("hpo") or "").strip()
+        if not (idx and hp_raw):
+            continue
+        for hp in split_hpo_values(hp_raw):
+            if hp not in hpo_by_idx[idx]:
+                hpo_by_idx[idx].append(hp)
 
     parent_map = defaultdict(set)  # dict: {aab_id: set(parent_aab_id, ...)}
     for r in parents:
@@ -645,11 +654,14 @@ def load_processed_tables(base_dir):
         idx = (r.get("index") or "").strip()
         if idx not in KEEP:
             continue
-        did = (r.get("related_diseases_id") or "").strip()
+        did_raw = (r.get("related_diseases_id") or "").strip()
         pm = to_pubmed_urls(
             r.get("diseases_pmids"), src_file=dis_path, row=i, col="diseases_pmids"
         )
-        if idx and did:
+        if not (idx and did_raw):
+            continue
+        # A cell may contain one or several disease IDs (e.g., separated by | ; ,)
+        for did in [x.strip() for x in re.split(r"[|;,\n\r]+", did_raw) if x.strip()]:
             dis_by_idx[idx].append((did, pm))
 
     return {
@@ -665,15 +677,13 @@ def load_processed_tables(base_dir):
         "indices": KEEP,
     }
 
-
 def build_core(
     g,
     data,
-    umls_hpo_rows,
-    umls_names,
     up_names,
     up_urls,
     umls_cn_names,
+    hpo_cn_names,
     chebi_cn_names,
     chebi_cn_urls,
 ):
@@ -693,9 +703,7 @@ def build_core(
     add_pref(g, csv_doc, os.path.basename(makaao_core_name))
     g.add((GLOBAL_ACTIVITY, PROV.used, csv_doc))
 
-    umls_hpo_by_code = (
-        grouped(umls_hpo_rows, "CODE") if umls_hpo_rows else {}
-    )  # create index of umls_hpo by code
+    hpo_local_names = hpo_cn_names or {}
     primary_labels, aab_class_uri = {}, {}
     pos_uris_by_idx = {}
 
@@ -750,28 +758,18 @@ def build_core(
         for hp_code in data["hpo_list"].get(
             idx, []
         ):  # we try to get the associated HPO positivity(ies) for that AAb, if it exits
-            pos_uri = hp_to_obo_uri(hp_code)
-            if not pos_uri:
+            code_norm = canonical_hpo_code(hp_code)
+            pos_uri = hp_to_obo_uri(code_norm)
+            if not pos_uri or not code_norm:
                 continue
-            code_norm = hp_code.replace("_", ":").upper()
-            pt_label = None
-            for row in umls_hpo_by_code.get(
-                code_norm, []
-            ):  # we try to get the main enlgish name for the HPO code from our UMLS-HPO table
-                s = (row.get("STR") or "").strip()
-                tty = (row.get("TTY") or "").strip().upper()
-                if not s:
-                    continue
-                if tty == "PT" and pt_label is None:
-                    pt_label = s
-                    add_pref(g, pos_uri, s)
-                add_label(
-                    g, pos_uri, RDFS.label, s
-                )  # if we find it, we add it as a skos:prefLabel and rdfs:label
+
+            # 1) Prefer code_names.csv HPO label
+            pt_label = (hpo_local_names.get(code_norm) or "").strip() or None
+            if pt_label:
+                add_pref(g, pos_uri, pt_label)
+
             if pt_label is None:
-                add_pref(
-                    g, pos_uri, code_norm
-                )  # if we don't find a preferred name, we just add the code as prefLabel
+                add_pref(g, pos_uri, code_norm)  # fallback to code only
             pos_list.append((pos_uri, pt_label or code_norm))
 
         if not pos_list:  # if there is no HPO positivity, we create a generic positivity class for that AAb
@@ -829,23 +827,15 @@ def build_core(
             )  # we create the URI of the CUI instanceS
             g.add((cui_uri, RDF.type, MAKAAO.Target))
             g.add((cui_uri, OBO.xref, UMLS[cui_key])) # we create a instance of the Target class with the relevant CUI as URI
-            all_umls_labels = (
-                umls_names.get(cui_key) or []
-            )  # we read from umls_names table all the names associated to that CUI
-            preferred = (
-                umls_local_names.get(cui_key)
-                or (all_umls_labels[0] if all_umls_labels else None)
-            )  # we try tp get preferred name from code_names table, or else from umls_name table
+            preferred = umls_local_names.get(
+                cui_key
+            )  # preferred name from code_names table
             if preferred:
                 add_pref(g, cui_uri, preferred)
             else:
                 add_pref(
                     g, cui_uri, cui_key
-                )  # if we find a pref name, we add it as pref label, else we take the CUI as label
-            for n in all_umls_labels:
-                add_label(
-                    g, cui_uri, RDFS.label, n
-                )  # we add all the other names as rdfs:labels
+                )  # fallback to CUI code if no name is available
             g.add(
                 (inst_aab, BAO.BAO_0000211, cui_uri)
             )  # we add relations between target instance and AAb instance
@@ -959,17 +949,16 @@ def build_core(
                 )  # for each source we have, we add a reified relation to carry provenance
                 add_reified_relation(g, chebi_ind, BAO.BAO_0000598, inst_aab, p)
 
-
 def process_diseases(
     g,
     data,
-    umls_orphanet_by_code,
-    umls_names,
     orpha_hpo_links,
     umls_cn_names,
+    hpo_cn_names=None,
 ):
     # HPO phenotypic abnormality root (HP:0000118)
     pheno_root = hp_to_obo_uri("HP:0000118")
+    hpo_cn_names = hpo_cn_names or {}
 
     # HPO codes used as positivity phenotypes for AAbs
     # (these correspond to the HP:0030057 subtree in your KG and should
@@ -977,11 +966,11 @@ def process_diseases(
     positivity_codes = set()
     for _idx, codes in (data.get("hpo_list") or {}).items():
         for hp_code in codes or []:
-            code_norm = (hp_code or "").strip().upper().replace("_", ":")
+            code_norm = canonical_hpo_code(hp_code)
             if code_norm:
                 positivity_codes.add(code_norm)
 
-    orpha_cn_names, orpha_cn_urls = read_code_names_orpha(CODE_NAMES_CSV)
+    orpha_cn_names, _ = read_code_names_orpha(CODE_NAMES_CSV)
 
     for idx, items in data["diseases"].items():
         aab_inst = MAKAAO[f"aab_{idx}_instance"]
@@ -993,6 +982,7 @@ def process_diseases(
             if not code_upper:
                 continue
             inst = None
+            cui_norm = canonical_cui_code(code_upper)
 
             # ORPHANET
             if code_upper.startswith(
@@ -1009,25 +999,14 @@ def process_diseases(
                     )
                 )  # reconstruct Orphanet URI from Orpha code read in data, and add relevant triples to the graph
                 g.add((d_cls, RDFS.subClassOf, MAKAAO.AutoimmuneDisease))
-                for r in umls_orphanet_by_code.get(
-                    orpha_num, []
-                ):  # try to get the main english term from UMLS-Orphanet mapping to label the Orphanet code
-                    s = (r.get("STR") or "").strip()
-                    tty = (r.get("TTY") or "").strip().upper()
-                    if not s:
-                        continue
-                    if tty == "PT":
-                        add_pref(g, d_cls, s)
-                    add_label(g, d_cls, RDFS.label, s)
                 inst = MAKAAO[
                     f"orpha_{orpha_num}_instance"
                 ]  # also add instance of Orphanet class
                 g.add((inst, RDF.type, d_cls))
-                try:
-                    g.add((inst, RDFS.label, Literal(orpha_cn_names[orpha_num])))
-                except Exception as e:
-                    print("Error adding Orpha code name:", e)
-
+                orpha_name = (orpha_cn_names.get(orpha_num) or "").strip()
+                if orpha_name:
+                    add_pref(g, inst, orpha_name)
+                    add_pref(g, d_cls, orpha_name)
 
                 # Use the ORDO URI string (same as keys in orpha_hpo_links)
                 for link in orpha_hpo_links.get(str(d_cls), []):
@@ -1037,18 +1016,10 @@ def process_diseases(
                         continue
 
                     # Normalize HPO code and build URI
-                    if hpo_id_raw.startswith("http"):
-                        last = hpo_id_raw.rsplit("/", 1)[-1]
-                        if last.upper().startswith("HP_"):
-                            code_norm = "HP:" + last[3:]
-                        else:
-                            code_norm = last.replace("_", ":").upper()
-                        pos_uri = URIRef(hpo_id_raw)
-                    else:
-                        code_norm = hpo_id_raw.strip().upper().replace("_", ":")
-                        pos_uri = hp_to_obo_uri(code_norm)
+                    code_norm = canonical_hpo_code(hpo_id_raw)
+                    pos_uri = hp_to_obo_uri(code_norm)
 
-                    if pos_uri is None:
+                    if pos_uri is None or not code_norm:
                         continue
 
                     # Add subclass of HP:0000118 for "regular" phenotypic abnormalities,
@@ -1056,8 +1027,11 @@ def process_diseases(
                     if pheno_root is not None and code_norm not in positivity_codes:
                         g.add((pos_uri, RDFS.subClassOf, pheno_root))
 
-                    # Label from Orphadata (HPOTerm / hpoterm)
-                    term = (link.get("HPOTerm") or link.get("hpoterm") or "").strip()
+                    # Label priority: code_names.csv HPO first, then Orphadata HPOTerm
+                    term = (
+                        (hpo_cn_names.get(code_norm) or "").strip()
+                        or (link.get("HPOTerm") or link.get("hpoterm") or "").strip()
+                    )
                     if term:
                         add_pref(g, pos_uri, term)
 
@@ -1107,29 +1081,20 @@ def process_diseases(
                     )
 
             # UMLS CUI
-            elif code_upper.startswith("C"):  # if current disease code is a CUI:
-                code_norm = code_upper.replace("CUI:", "").strip()
+            elif cui_norm:  # if current disease code contains a CUI:
+                code_norm = cui_norm
                 cui_uri = URIRef(UMLS + code_norm)  # reconstruct UMLS URI from code
                 makaao_cui_uri = URIRef(MAKAAO + "CUI_" + code_norm + "_instance")
                 inst = makaao_cui_uri
                 preferred = (umls_cn_names or {}).get(
                     code_norm
-                )  # get preferred english label from code_names table, if it's there
-                all_umls_labels = (
-                    umls_names.get(code_norm) or []
-                )  # as 2nd option, get preferred eglish name from umls_names table, if it's there
+                )  # preferred label from code_names table
                 if preferred:
                     add_pref(g, inst, preferred)
-                elif all_umls_labels:
-                    add_pref(g, inst, all_umls_labels[0])
                 else:
                     add_pref(
                         g, inst, code_norm
-                    )  # otherwise we add the code as a prefLabel, if we didn't get an english name
-                for n in (
-                    all_umls_labels
-                ):  # we add all the labels we found as regular labels
-                    add_label(g, inst, RDFS.label, n)
+                    )  # fallback to code label if name is unavailable
                 g.add((inst, OBO.xref, cui_uri))
 
             # last case, if code is not a properly formatted orpha or CUI code, we just create a generic instance with the code as label
@@ -1152,14 +1117,15 @@ def process_diseases(
                     g, aab_inst, SIO["SIO_001403"], inst, p
                 )  # for each provenance entry, we add a reified relation to the graph, for the current instance
 
-
-def process_loinc_mappings(g, loinc_umls_csv, loinc_index_csv, keep_indices):
-    loinc_rows = read_csv_rows(
-        loinc_umls_csv
-    )  # that tables contains all MRCONOS rows associated to a LOINC code
+def process_loinc_mappings(g, loinc_index_csv, keep_indices, loinc_umls_csv=None):
+    loinc_rows = (
+        read_csv_rows(loinc_umls_csv)
+        if isinstance(loinc_umls_csv, str) and loinc_umls_csv.strip()
+        else []
+    )  # optional table with MRCONSO rows associated to LOINC codes
     map_rows = read_csv_rows(
         loinc_index_csv
-    )  # one of our processed dat table where we mapped LOINC codes to aab_id
+    )  # processed table where LOINC codes are mapped to aab_id
     if not map_rows:
         return
     loinc2cui = {}
@@ -1197,9 +1163,7 @@ def process_loinc_mappings(g, loinc_umls_csv, loinc_index_csv, keep_indices):
             g.add((aab_cls, OBO.xref, C))
             # g.add((C, SKOS.closeMatch, aab_cls)) # also look if that LOINC code has a UMLS CUI associated to it, annd if yes, also link it to the AAb
 
-
 # def process_snomed_mappings : that was a function to add matches from a files with matches automatically found between SNOMED and our AAb, but it is now removed
-
 
 # ===================== FAIR / DCAT METADATA =====================
 # function to add some hard-coded triples to the KG
@@ -1209,7 +1173,7 @@ def append_fair_metadata(kg: Graph):
     kg.add((ONT, RDF.type, DCAT.Dataset))
     kg.add((ONT, RDF.type, VOID.Dataset))
 
-    kg.add((ONT, DCTERMS.identifier, ONT))
+    kg.add((ONT, DCTERMS.identifier, Literal(f"MAKAAO-{version}")))
     kg.add((ONT, DCTERMS.title, Literal("MAKAAO Knowledge Graph", lang="en")))
     kg.add(
         (
@@ -1233,23 +1197,75 @@ def append_fair_metadata(kg: Graph):
     kg.add(
         (ONT, DCTERMS.license, URIRef("https://creativecommons.org/licenses/by/4.0/"))
     )
-    kg.add((ONT, DCTERMS.accessRights, Literal("Open access")))
-    kg.add((ONT, ODRL.hasPolicy, URIRef("https://makaao.inria.fr/usage_policies.html")))
+
+    OPEN_ACCESS = URIRef("http://makaao.inria.fr/kg/access-right/open")
+    kg.add((OPEN_ACCESS, RDF.type, DCTERMS.RightsStatement))
+    kg.add(
+        (
+            OPEN_ACCESS,
+            RDFS.label,
+            Literal("Open access", lang="en"),
+        )
+    )
+    kg.add((ONT, DCTERMS.accessRights, OPEN_ACCESS))
+
+    POLICY_PAGE = URIRef("https://makaao.inria.fr/usage_policies.html")
+    kg.add((POLICY_PAGE, RDF.type, DCTERMS.RightsStatement))
+    kg.add((ONT, DCTERMS.rights, POLICY_PAGE))
+
+        
+    DIST = URIRef(
+        f"http://makaao.inria.fr/kg/distribution/makaao-{version}-rdfxml"
+    )
+
+    kg.add((ONT, DCAT.distribution, DIST))
+    kg.add((DIST, RDF.type, DCAT.Distribution))
 
     kg.add(
         (
-            ONT,
+            DIST,
             DCAT.downloadURL,
             URIRef(f"https://makaao.inria.fr/data/makaao_{version}.rdf"),
         )
     )
-    kg.add((ONT, DCAT.endpointURL, URIRef("http://makaao.inria.fr/kg/")))
+
+    kg.add(
+        (
+            DIST,
+            DCAT.mediaType,
+            URIRef(
+                "https://www.iana.org/assignments/media-types/application/rdf+xml"
+            ),
+        )
+    )
+
+    kg.add(
+        (
+            DIST,
+            DCTERMS.license,
+            URIRef("https://creativecommons.org/licenses/by/4.0/"),
+        )
+    )
+
+    SERVICE = URIRef("http://makaao.inria.fr/kg/service")
+    kg.add((SERVICE, RDF.type, DCAT.DataService))
+    kg.add(
+        (
+            SERVICE,
+            DCAT.endpointURL,
+            URIRef("http://makaao.inria.fr/kg/"),
+        )
+    )
+
+    
+    kg.add((SERVICE, DCAT.servesDataset, ONT))
     kg.add((ONT, DCAT.mediaType, Literal("application/rdf+xml")))
     kg.add((ONT, DCAT.landingPage, URIRef("https://makaao.inria.fr/")))
 
     ACT = URIRef("http://makaao.inria.fr/kg/activity_makaao_core")
     kg.add((ONT, PROV.wasGeneratedBy, ACT))
-    kg.add((ONT, PROV.wasDerivedFrom, ACT))
+    kg.add((ACT, RDF.type, PROV.Activity))
+    #kg.add((ONT, PROV.wasDerivedFrom, ACT))
 
     author_uri = URIRef("https://heka.gitlabpages.inria.fr/team/members/maury.html")
     kg.add((ONT, DCTERMS.creator, author_uri))
@@ -1266,9 +1282,23 @@ def append_fair_metadata(kg: Graph):
         kg.add((team_uri, RDF.type, FOAF.Organization))
         add_pref(kg, team_uri, team_label)
 
-    kg.add((ONT, DCTERMS.created, Literal(date.today().isoformat(), datatype=XSD.date)))
+    kg.add(
+        (
+            ONT,
+            DCTERMS.created,
+            Literal("2024-01-15", datatype=XSD.date),
+        )
+    )
+
+    kg.add(
+        (
+            ONT,
+            DCTERMS.modified,
+            Literal(date.today().isoformat(), datatype=XSD.date),
+        )
+    )
     kg.add((ONT, OWL.versionInfo, Literal(version)))
-    kg.add((ONT, OWL.imports, URIRef("http://purl.obolibrary.org/obo/ro.owl")))
+    #kg.add((ONT, OWL.imports, URIRef("http://purl.obolibrary.org/obo/ro.owl")))
     kg.add((ONT, VOID.uriSpace, Literal("http://makaao.inria.fr/kg/")))
     kg.add((ONT, SCHEMA.name, Literal("MAKAAO Knowledge Graph", lang="en")))
     kg.add(
@@ -1285,11 +1315,32 @@ def append_fair_metadata(kg: Graph):
     kg.add((ONT, RDFS.seeAlso, URIRef("https://makaao.inria.fr")))
     for kw in ["Autoantibodies", "Autoimmune diseases"]:
         kg.add((ONT, DCAT.keyword, Literal(kw, lang="en")))
-    kg.add((ONT, DCAT.contactPoint, URIRef("mailto:contact.makaao@inria.fr")))
-    kg.add((ONT, VOID.triples, Literal(len(kg)+1, datatype=XSD.integer)))
 
+    from rdflib.namespace import Namespace
 
+    VCARD = Namespace("http://www.w3.org/2006/vcard/ns#")
 
+    CONTACT = URIRef("http://makaao.inria.fr/kg/contact")
+
+    kg.add((ONT, DCAT.contactPoint, CONTACT))
+    kg.add((CONTACT, RDF.type, VCARD.Organization))
+    kg.add(
+        (
+            CONTACT,
+            VCARD.hasEmail,
+            URIRef("mailto:contact.makaao@inria.fr"),
+        )
+    )
+    kg.remove((ONT, VOID.triples, None))
+
+    final_count = len(kg) + 1
+    kg.add(
+        (
+            ONT,
+            VOID.triples,
+            Literal(final_count, datatype=XSD.integer),
+        )
+    )
 
 # ===================== T-BOX EXPORT =====================
 def extract_tbox_local_only(source: Graph, local_ns: str) -> Graph:
@@ -1344,30 +1395,6 @@ def main():
 
     # Optional enrichment datasets
 
-    # read UMLS-HPO table where we can see the enlgish main names and syns associated to these code (this is an extrcat from MRCONSO.RRF)
-    umls_hpo_rows = read_csv_rows(UMLS_HPO_CSV) if os.path.exists(UMLS_HPO_CSV) else []
-
-    # read the csv files containing the UMLS main english name, associated to our UMLS CUI of interest (this was collected from UMLS API when we queried it four our UMLS concepts of interest) (not only HPO terms unlike the previous one)
-    umls_names = (
-        umls_names_index(UMLS_NAMES_CSV) if os.path.exists(UMLS_NAMES_CSV) else {}
-    )
-
-    # read UMLS-Orphanet csv table with their main english name and syns (obtained from MRCONSO.RRF)
-    orpha_by_cui, orpha_by_code = (
-        umls_code_group(UMLS_ORPHANET_CSV)
-        if os.path.exists(UMLS_ORPHANET_CSV)
-        else ({}, {})
-    )
-    # orpha_by_cui is a dict where keys are UMLS CUIs and values are list of rows (dict) from the csv where we can find the name/syns etc
-    # orpha_by_code is similar but keys are Orphanet codes
-
-    snomed_by_cui, _ = (
-        umls_code_group(UMLS_SNOMED_CSV)
-        if os.path.exists(UMLS_SNOMED_CSV)
-        else ({}, {})
-    )
-    # snomed_by_cui is a dictionary where keys are UMLS CUIs and values are list of rows (dict) from the csv where we can find the name/syns etc (MRCONSO) (only rows of SNOMED items)
-
     # orpha_hpo_links is a dict where keys are Orphanet codes and values are [hpo, freq]; from the csv where we can find the HPO terms linked to the Orphanet diseases (from en_product4.xml an Orphanet file listing HPO terms associated to Orphanet dieases with their frequency)
     orpha_hpo_links = (
         grouped(read_csv_rows(ORPHANET_HPO_LINKS), "orpha_code")
@@ -1385,15 +1412,19 @@ def main():
         umls_cn_names, _ = read_code_names_umls(
             CODE_NAMES_CSV
         )  # dictinoary: {CUI: english_name} (CUIs of differnt concept sof interest: targets, diseases...)
+        hpo_cn_names, _ = read_code_names_hpo(
+            CODE_NAMES_CSV
+        )  # dict: {HP:nnnnnnn: english_name}
         chebi_cn_names, chebi_cn_urls = read_code_names_chebi(
             CODE_NAMES_CSV
         )  # 2 dictionaries: {chebi_id: english_name} and {chebi_id: chebi_url}
         print(
-            f"Loaded names — UniProt:{len(up_names)} UMLS:{len(umls_cn_names)} ChEBI:{len(chebi_cn_names)}"
+            f"Loaded names — UniProt:{len(up_names)} UMLS:{len(umls_cn_names)} HPO:{len(hpo_cn_names)} ChEBI:{len(chebi_cn_names)}"
         )
     else:
         up_names, up_urls = {}, {}
         umls_cn_names = {}
+        hpo_cn_names = {}
         chebi_cn_names, chebi_cn_urls = {}, {}
         print(
             f"WARN: {CODE_NAMES_CSV} not found; labels may fall back to codes."
@@ -1415,11 +1446,10 @@ def main():
     build_core(
         g,
         data,
-        umls_hpo_rows,
-        umls_names,
         up_names,
         up_urls,
         umls_cn_names,
+        hpo_cn_names,
         chebi_cn_names,
         chebi_cn_urls,
     )
@@ -1428,13 +1458,12 @@ def main():
     process_diseases(
         g,
         data,
-        orpha_by_code,
-        umls_names,
         orpha_hpo_links,
         umls_cn_names,
+        hpo_cn_names,
     )
     keep = data["indices"]
-    process_loinc_mappings(g, LOINC_UMLS, LOINC_INDEX_CSV, keep)
+    process_loinc_mappings(g, LOINC_INDEX_CSV, keep)
 
     append_fair_metadata(g)
 
@@ -1447,7 +1476,6 @@ def main():
         destination=OUTPUT_OWL_ENRICHED, format="xml"
     )  #  we write the KG to an RDF file (XML syntax)
     print(f"Saved {OUTPUT_OWL_ENRICHED}  triples={len(g)}")
-
 
 if __name__ == "__main__":  
     main()
