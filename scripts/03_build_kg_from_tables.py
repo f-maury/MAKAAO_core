@@ -12,7 +12,7 @@ from datetime import date
 
 # ===================== CONFIG =====================
 
-version = "1.0.2" #from makaao_core_21-07-2026.xlsx
+version = "1.0.3" #from makaao_core_29-07-2026.xlsx
 BASE_DIR = "../data/processed_tables/"
 OUTPUT_DIR = "../data/"
 makaao_core_name = "../data/makaao_core.csv"

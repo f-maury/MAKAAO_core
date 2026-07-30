@@ -3,7 +3,7 @@ from rdflib import Graph, Namespace, URIRef, RDF, RDFS, OWL
 from rdflib.namespace import SKOS
 
 # ---- Paths ----
-version = "1.0.2"
+version = "1.0.3" #from makaao_core_29-07-2026.xlsx
 IN_PATH = f"../kg/makg-core_{version}.rdf"
 OUT_PATH = f"../kg/makg-core_lite_{version}.rdf"
 
