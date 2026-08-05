@@ -1,4 +1,35 @@
-plots_and_stats/
+# Python and tests
 __pycache__/
-.ruff_cache/
+*.py[cod]
 .pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+shacl_report.txt
+
+# Secrets and local tools
+umls_api_key.txt
+robot.jar
+
+# Private/licensed source data
+data/LoincPartLink_Primary.csv
+data/en_product4.xml
+data/external_ontologies/
+data/enrichment_tables/
+data/processed_tables/
+data/hp_folder/
+data/hp.json
+data/hp.owl
+data/mondo.owl
+data/loinc_labels.json
+data/loinc_part_test_dict.json
+data/makaao_core*.csv
+data/makaao_core*.xlsx
+
+# Generated knowledge graphs and reasoning output
+kg/*.rdf
+kg/*.owl
+kg/catalog-v001*.xml
+kg/reasoner/
+kg/reasoning/
+reasoner_check/

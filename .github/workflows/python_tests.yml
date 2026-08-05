@@ -1,41 +1,90 @@
-name: Python unit tests
+name: Python tests
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: python-tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   pytest:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install dependencies
+      - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-cov
-          pip install pandas rdflib pyshacl openpyxl requests
+          python -m pip install \
+            pytest pytest-cov \
+            pandas 'rdflib>=7.5,<8' openpyxl requests
+
+      - name: Verify committed sample fixture
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+
+          path = Path("data/makaao_sample.csv")
+          if not path.is_file() or path.stat().st_size == 0:
+              raise SystemExit(f"Required public sample fixture is missing or empty: {path}")
+          frame = pd.read_csv(path, dtype=str, keep_default_na=False, low_memory=False)
+          if frame.empty:
+              raise SystemExit(f"Required public sample fixture contains no rows: {path}")
+          print(f"Sample fixture: {path} ({len(frame)} rows, {len(frame.columns)} columns)")
+          PY
+
+      - name: Compile current pipeline scripts
+        run: |
+          python -m py_compile \
+            scripts/02_create_enrichment_tables.py \
+            scripts/03_build_kg_from_tables.py \
+            scripts/03-1_build_reasoning_release.py \
+            scripts/04_make_lite_graph_from_makaao-kg.py
 
       - name: Run tests with coverage
         run: |
-          pytest -q --cov=scripts --cov-report=xml --cov-report=term-missing
+          pytest -q tests \
+            --cov=scripts \
+            --cov-config=.coveragerc \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            --cov-fail-under=75
 
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+      - name: Upload coverage to Codecov (non-blocking)
+        if: matrix.python-version == '3.12'
+        uses: codecov/codecov-action@v7
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.xml
           flags: unittests
-          fail_ci_if_error: true
+          disable_search: true
+          fail_ci_if_error: false
+
+      - name: Upload coverage report artifact
+        if: always() && matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-coverage
+          path: coverage.xml
+          if-no-files-found: warn

@@ -1,202 +1,300 @@
+import sys
 import importlib.util
-import re
+import json
 from pathlib import Path
 
 import pytest
-from rdflib import Graph, URIRef
-from rdflib.namespace import RDF, RDFS, SKOS
+from rdflib import Graph, Literal, OWL, RDF, RDFS, URIRef
+from rdflib.namespace import SKOS
 
 
 def load_module(path: Path, name: str):
     spec = importlib.util.spec_from_file_location(name, path)
-    mod = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def resolve_script(*candidates: str) -> Path:
-    for c in candidates:
-        p = Path(c)
-        if p.exists():
-            return p
-
-    # fallback recursive search by basename
-    basenames = [Path(c).name for c in candidates]
-    roots = [Path.cwd(), Path.cwd() / "scripts", Path("/mnt/data")]
-    seen = set()
-    for root in roots:
-        if not root.exists():
-            continue
-        key = str(root.resolve())
-        if key in seen:
-            continue
-        seen.add(key)
-        for base in basenames:
-            hits = list(root.rglob(base))
-            if hits:
-                return hits[0]
-
-    raise FileNotFoundError(f"Cannot locate any of: {candidates}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.fixture(scope="module")
 def mod():
-    p = resolve_script(
-        "scripts/03_build_kg_from_tables.py",
-        "03_build_kg_from_tables.py",
-        "/mnt/data/03_build_kg_from_tables.py",
+    return load_module(Path("scripts/03_build_kg_from_tables.py"), "build_kg")
+
+
+def fresh_graph(mod):
+    return mod.init_graph()
+
+
+def add_class(graph, iri, label, parent=None):
+    graph.add((iri, RDF.type, OWL.Class))
+    if parent is not None:
+        graph.add((iri, RDFS.subClassOf, parent))
+    graph.add((iri, RDFS.label, Literal(label)))
+
+
+def test_current_script_version_and_reasoning_helper_are_synchronized(mod):
+    helper = load_module(
+        Path("scripts/03-1_build_reasoning_release.py"), "reasoning_helper_version"
     )
-    return load_module(p, "build_kg")
+    assert mod.SCRIPT_VERSION == "1.2.28"
+    assert helper.SCRIPT_VERSION == mod.SCRIPT_VERSION
+    assert helper.SCRIPT_ITERATION == mod.SCRIPT_ITERATION
 
 
-def test_make_valid_idempotent_and_safe_charset(mod):
-    raw = " A:B/C-D.E|F "
-    v1 = mod.make_valid(raw)
-    v2 = mod.make_valid(v1)
-
-    # Core contract
-    assert isinstance(v1, str) and v1
-    assert v1 == v2  # idempotent
-
-    # Sanitization expectations (robust to implementation choices)
-    assert v1 == v1.strip()
-    assert not re.search(r"\s", v1)
-
-    # These characters must be removed/replaced for URI-safety
-    for bad in (":", "/", "|", "\\"):
-        assert bad not in v1
-
-    # Allow common URI-fragment-safe punctuation used by some implementations.
-    # (If your make_valid is stricter, this still passes.)
-    assert all(ch.isalnum() or ch in {"_", "-", "."} for ch in v1)
+def test_identifier_normalizers(mod):
+    assert mod.make_valid(" A:B/C|D ") == "_A_B_C_D_"
+    assert mod.canonical_loinc_code("https://loinc.org/LP123-4", "part") == "LP123-4"
+    assert mod.canonical_loinc_code("LOINC:1234-5", "term") == "1234-5"
+    assert mod.canonical_hpo_code("HP_0000001") == "HP:0000001"
+    assert mod.canonical_orpha_code("ORPHA:123") == "123"
+    assert mod.canonical_cui_code("CUI:C1234567") == "C1234567"
 
 
-def test_add_label_deduplication_rules(mod):
-    g = Graph()
-    n = mod.MAKAAO["X"]
+def test_label_deduplication_and_cui_fallbacks(mod):
+    graph = fresh_graph(mod)
+    node = mod.MAKAAO["Example"]
+    assert mod.add_label(graph, node, RDFS.label, "Example") is True
+    assert mod.add_label(graph, node, RDFS.label, "Example") is False
+    assert mod.add_pref(graph, node, "Example") is True
+    assert mod.add_pref(graph, node, "Example") is False
 
-    # first label added
-    assert mod.add_label(g, n, RDFS.label, "Quadriceps muscle weakness") is True
-    # duplicate same prop rejected
-    assert mod.add_label(g, n, RDFS.label, "Quadriceps muscle weakness") is False
-    # cross-duplicate between rdfs:label and skos:prefLabel allowed once
-    assert mod.add_pref(g, n, "Quadriceps muscle weakness") is True
-    # but further duplicates rejected
-    assert mod.add_pref(g, n, "Quadriceps muscle weakness") is False
-
-    # duplicates across unrelated props are rejected
-    assert mod.add_pref(g, n, "X") is True
-    assert mod.add_label(g, n, RDFS.label, "X") is False
+    cui_class, cui_instance = mod.ensure_cui_class_and_instance(graph, "C1234567")
+    for resource in (cui_class, cui_instance):
+        assert Literal("C1234567") in set(graph.objects(resource, RDFS.label))
+        assert Literal("C1234567") in set(graph.objects(resource, SKOS.prefLabel))
+    assert mod.validate_local_cui_labels(graph) == 2
 
 
-def test_add_label_rejects_empty_string(mod):
-    g = Graph()
-    n = mod.MAKAAO["BlankTest"]
+def test_exact_label_audit_searches_only_the_three_permitted_kind_pairs(mod, tmp_path):
+    graph = fresh_graph(mod)
 
-    # keep this strict check (stable expectation)
-    assert mod.add_label(g, n, RDFS.label, "") is False
+    cui_protein = mod.MAKAAO["CUI_C0000001"]
+    uniprot = mod.MAKAAO["UP_P12345"]
+    add_class(graph, cui_protein, "Protein X", mod.MAKAAO.CUI)
+    add_class(graph, uniprot, "  protein   x  ")
 
+    antibody = mod.MAKAAO["aab_1"]
+    loinc_part = mod.MAKAAO_LOINC["LP12345-6"]
+    add_class(graph, antibody, "Marker Y", mod.MAKAAO.Autoantibody)
+    add_class(graph, loinc_part, "marker y", mod.MAKAAO.LoincPart)
 
-def test_add_label_whitespace_behavior_is_stable(mod):
-    """
-    Some versions of script 03 accept whitespace-only labels, others reject them.
-    We keep this test non-breaking but explicit.
-    """
-    g = Graph()
-    n = mod.MAKAAO["BlankWhitespaceTest"]
+    ordo = URIRef("http://www.orpha.net/ORDO/Orphanet_123")
+    cui_disease = mod.MAKAAO["CUI_C0000002"]
+    add_class(graph, ordo, "Disease Z", mod.MAKAAO.AutoimmuneDisease)
+    add_class(graph, cui_disease, "disease z", mod.MAKAAO.CUI)
 
-    rv = mod.add_label(g, n, RDFS.label, "   ")
-    assert rv in (True, False)
+    # Exact collisions in prohibited combinations must never become candidates.
+    hpo = URIRef("http://purl.obolibrary.org/obo/HP_0000001")
+    chebi = URIRef("http://purl.obolibrary.org/obo/CHEBI_23367")
+    second_uniprot = mod.MAKAAO["UP_Q99999"]
+    third_uniprot = mod.MAKAAO["UP_Q99998"]
+    add_class(graph, hpo, "Forbidden collision")
+    add_class(graph, chebi, "Forbidden collision")
+    add_class(graph, second_uniprot, "Same UniProt label")
+    add_class(graph, third_uniprot, "Same UniProt label")
 
-    if rv:
-        vals = [str(o) for o in g.objects(n, RDFS.label)]
-        assert "   " in vals
-    else:
-        assert list(g.objects(n, RDFS.label)) == []
-
-
-def test_03_main_smoke_outputs_parseable_graph(tmp_path, mod):
-    """
-    Integration smoke test for script 03:
-    - builds processed tables from sample via script 01
-    - runs script 03 main()
-    - checks output RDF exists and is parseable
-    """
-    p1_path = resolve_script(
-        "scripts/01_process_makaao_core_to_tables.py",
-        "01_process_makaao_core_to_tables.py",
-        "/mnt/data/01_process_makaao_core_to_tables.py",
+    rows = mod.add_label_collision_close_matches(graph)
+    assert len(rows) == 3
+    assert {row["decision"] for row in rows} == {"linked"}
+    assert sum(int(row["close_match_triples_added"]) for row in rows) == 6
+    expected_kind_pairs = frozenset(
+        {
+            frozenset({"umls_cui", "uniprot"}),
+            frozenset({"autoantibody", "loinc_part"}),
+            frozenset({"ordo_disease", "umls_cui"}),
+        }
     )
-    p1 = load_module(p1_path, "process_core_for_03_test")
+    assert mod.LABEL_MATCH_KIND_PAIRS == expected_kind_pairs
+    assert {
+        frozenset((row["class_1_kind"], row["class_2_kind"])) for row in rows
+    } == expected_kind_pairs
 
-    sample_candidates = [
-        Path("data/makaao_sample.csv"),
-        Path("/mnt/data/data/makaao_sample.csv"),
-        Path("makaao_sample.csv"),
-    ]
-    sample_csv = next((p for p in sample_candidates if p.exists()), None)
-    if sample_csv is None:
-        pytest.skip("makaao_sample.csv not available in this environment")
+    for left, right in (
+        (cui_protein, uniprot),
+        (antibody, loinc_part),
+        (ordo, cui_disease),
+    ):
+        assert (left, SKOS.closeMatch, right) in graph
+        assert (right, SKOS.closeMatch, left) in graph
 
-    df = p1.load_core(sample_csv)
+    assert (hpo, SKOS.closeMatch, chebi) not in graph
+    assert (second_uniprot, SKOS.closeMatch, third_uniprot) not in graph
 
-    processed = tmp_path / "processed_tables"
-    processed.mkdir()
+    report = tmp_path / "class-label-close-match-report.tsv"
+    mod.write_label_collision_report(rows, report)
+    text = report.read_text(encoding="utf-8")
+    assert "review_required" not in text
+    assert text.count("\n") == 4
 
-    # Produce processed tables expected by builder 03
-    p1.write_index_name_en(df, processed)
-    p1.write_index_hpo_id(df, processed)
-    p1.write_index_parent_index(df, processed)
-    p1.write_index_syn_en(df, processed)
-    p1.write_index_syn_fr(df, processed)
-    p1.write_index_cui_source(df, processed)
-    p1.write_index_disease_source(df, processed)
-    p1.write_index_uniprot_source(df, processed)
-    p1.write_index_chebi_source(df, processed)
-    p1.write_index_loinc(df, processed)
 
-    # Re-point 03 builder I/O
-    mod.BASE_DIR = str(processed) + "/"
-    sample_core = tmp_path / "makaao_core.csv"
-    sample_core.write_bytes(sample_csv.read_bytes())
-    mod.makaao_core_name = str(sample_core)
 
-    out_dir = tmp_path / "kg"
-    out_dir.mkdir()
-    mod.OUTPUT_OWL_ENRICHED = str(out_dir / "makg-sample.rdf")
-    mod.OUTPUT_OWL_TBOX = str(out_dir / "makg-sample_ontology.owl")
+def test_exact_label_audit_excludes_all_other_kind_combinations(mod):
+    graph = fresh_graph(mod)
+    shared_label = "One shared label"
 
-    mod.main()
+    resources = {
+        "autoantibody": mod.MAKAAO["aab_900"],
+        "loinc_part": mod.MAKAAO_LOINC["LP900-1"],
+        "umls_cui": mod.MAKAAO["CUI_C0000900"],
+        "uniprot": mod.MAKAAO["UP_P00900"],
+        "ordo_disease": URIRef("http://www.orpha.net/ORDO/Orphanet_900"),
+        "hpo": URIRef("http://purl.obolibrary.org/obo/HP_0000900"),
+        "chebi": URIRef("http://purl.obolibrary.org/obo/CHEBI_900"),
+    }
 
-    out_path = out_dir / "makg-sample.rdf"
-    assert out_path.exists() and out_path.stat().st_size > 0
-
-    g = Graph()
-    g.parse(str(out_path), format="xml")
-    assert len(g) > 0
-
-    # Spot-check class exists in graph
-    disease_class = (
-        mod.MAKAAO["AutoimmuneDisease"]
-        if hasattr(mod, "MAKAAO")
-        else URIRef("http://makaao.inria.fr/kg/AutoimmuneDisease")
+    add_class(graph, resources["autoantibody"], shared_label, mod.MAKAAO.Autoantibody)
+    add_class(graph, resources["loinc_part"], shared_label, mod.MAKAAO.LoincPart)
+    add_class(graph, resources["umls_cui"], shared_label, mod.MAKAAO.CUI)
+    add_class(graph, resources["uniprot"], shared_label)
+    add_class(
+        graph,
+        resources["ordo_disease"],
+        shared_label,
+        mod.MAKAAO.AutoimmuneDisease,
     )
-    disease_instances = set(g.subjects(RDF.type, disease_class))
-    assert len(disease_instances) > 0, "No AutoimmuneDisease instances found in sample graph"
+    add_class(graph, resources["hpo"], shared_label)
+    add_class(graph, resources["chebi"], shared_label)
 
-    # At least one disease instance should have a non-empty label/prefLabel.
-    # (Do not require all: some runs intentionally omit external label enrichment tables.)
-    labeled = []
-    for inst in disease_instances:
-        labels = {str(o).strip() for o in g.objects(inst, RDFS.label)}
-        prefs = {str(o).strip() for o in g.objects(inst, SKOS.prefLabel)}
-        if any(x for x in labels | prefs):
-            labeled.append(inst)
-    assert len(labeled) >= 1, "Expected at least one labeled disease instance"
+    rows = mod.add_label_collision_close_matches(graph)
+    actual_pairs = {
+        frozenset((row["class_1_kind"], row["class_2_kind"])) for row in rows
+    }
+    expected_pairs = {
+        frozenset({"umls_cui", "uniprot"}),
+        frozenset({"autoantibody", "loinc_part"}),
+        frozenset({"ordo_disease", "umls_cui"}),
+    }
+    assert actual_pairs == expected_pairs
+    assert len(rows) == 3
 
-    # Global sanity: no blank labels in graph
-    for lit in g.objects(None, RDFS.label):
-        assert str(lit).strip() != ""
-    for lit in g.objects(None, SKOS.prefLabel):
-        assert str(lit).strip() != ""
+    linked_resources = {
+        frozenset((URIRef(row["class_1"]), URIRef(row["class_2"]))) for row in rows
+    }
+    expected_resources = {
+        frozenset((resources["umls_cui"], resources["uniprot"])),
+        frozenset((resources["autoantibody"], resources["loinc_part"])),
+        frozenset((resources["ordo_disease"], resources["umls_cui"])),
+    }
+    assert linked_resources == expected_resources
+
+    for left_kind, left in resources.items():
+        for right_kind, right in resources.items():
+            if str(left) >= str(right):
+                continue
+            pair = frozenset((left, right))
+            if pair in expected_resources:
+                assert (left, SKOS.closeMatch, right) in graph
+                assert (right, SKOS.closeMatch, left) in graph
+            else:
+                assert (left, SKOS.closeMatch, right) not in graph, (
+                    f"Unexpected mapping for {left_kind} and {right_kind}"
+                )
+                assert (right, SKOS.closeMatch, left) not in graph, (
+                    f"Unexpected reverse mapping for {left_kind} and {right_kind}"
+                )
+
+
+def test_exact_label_audit_uses_pref_and_alt_labels(mod):
+    graph = fresh_graph(mod)
+    cui = mod.MAKAAO["CUI_C0000100"]
+    uniprot = mod.MAKAAO["UP_P00001"]
+    graph.add((cui, RDF.type, OWL.Class))
+    graph.add((cui, RDFS.subClassOf, mod.MAKAAO.CUI))
+    graph.add((cui, SKOS.altLabel, Literal("  Alias   Protein ")))
+    graph.add((uniprot, RDF.type, OWL.Class))
+    graph.add((uniprot, SKOS.prefLabel, Literal("alias protein")))
+
+    rows = mod.add_label_collision_close_matches(graph)
+    assert len(rows) == 1
+    assert rows[0]["shared_normalized_labels"] == "alias protein"
+    assert rows[0]["close_match_triples_added"] == 2
+    assert (cui, SKOS.closeMatch, uniprot) in graph
+    assert (uniprot, SKOS.closeMatch, cui) in graph
+
+
+def test_exact_label_audit_is_idempotent_for_existing_mappings(mod):
+    graph = fresh_graph(mod)
+    ordo = URIRef("http://www.orpha.net/ORDO/Orphanet_999")
+    cui = mod.MAKAAO["CUI_C0000999"]
+    add_class(graph, ordo, "Example disease", mod.MAKAAO.AutoimmuneDisease)
+    add_class(graph, cui, "example disease", mod.MAKAAO.CUI)
+    graph.add((ordo, SKOS.closeMatch, cui))
+    graph.add((cui, SKOS.closeMatch, ordo))
+
+    rows = mod.add_label_collision_close_matches(graph)
+    assert len(rows) == 1
+    assert rows[0]["decision"] == "linked"
+    assert rows[0]["close_match_triples_added"] == 0
+
+def test_orpha_umls_dictionary_must_be_symmetric(mod, tmp_path):
+    path = tmp_path / "orpha_umls_mappings.json"
+    payload = {
+        "orpha_to_umls": {"123": ["C1234567"]},
+        "umls_to_orpha": {"C1234567": ["123"]},
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert mod.read_orpha_umls_mappings(path) == [("123", "C1234567")]
+
+    payload["umls_to_orpha"] = {}
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="not symmetric"):
+        mod.read_orpha_umls_mappings(path)
+
+
+def test_empty_loinc_primary_array_creates_part_without_fabricated_term(mod, tmp_path):
+    graph = fresh_graph(mod)
+    index_csv = tmp_path / "index_loinc.csv"
+    index_csv.write_text("aab_id,loinc_id\n1,LP100-1\n", encoding="utf-8")
+    mappings = tmp_path / "loinc_part_test_dict.json"
+    mappings.write_text(json.dumps({"LP100-1": []}), encoding="utf-8")
+    labels = tmp_path / "loinc_labels.json"
+    labels.write_text(
+        json.dumps({"parts": {"LP100-1": "Example Part"}, "tests": {}}),
+        encoding="utf-8",
+    )
+
+    mod.process_loinc_mappings(
+        graph,
+        str(index_csv),
+        {"1"},
+        part_test_json=str(mappings),
+        labels_json=str(labels),
+    )
+
+    part_class = mod.MAKAAO_LOINC["LP100-1"]
+    part_instance = mod.MAKAAO["loinc_LP100-1_instance"]
+    assert (part_class, RDF.type, OWL.Class) in graph
+    assert (part_instance, RDF.type, part_class) in graph
+    assert not list(graph.triples((None, mod.MAKAAO.hasLoincComponent, None)))
+
+
+def test_non_reified_projection_removes_records_but_preserves_assertion(mod):
+    graph = fresh_graph(mod)
+    subject = mod.MAKAAO["subject"]
+    predicate = mod.MAKAAO["predicate"]
+    obj = mod.MAKAAO["object"]
+    relation = mod.MAKAAO["r1"]
+    document = mod.MAKAAO["document_1"]
+
+    graph.add((subject, predicate, obj))
+    graph.add((relation, RDF.type, RDF.Statement))
+    graph.add((relation, RDF.type, mod.MAKAAO.Relation))
+    graph.add((relation, RDF.subject, subject))
+    graph.add((relation, RDF.predicate, predicate))
+    graph.add((relation, RDF.object, obj))
+    graph.add((relation, mod.PROV.wasDerivedFrom, document))
+    graph.add((document, RDF.type, mod.MAKAAO.Document))
+
+    projected = mod.build_non_reified_graph(graph)
+    assert (subject, predicate, obj) in projected
+    assert not list(projected.triples((relation, None, None)))
+    assert not list(projected.triples((document, None, None)))
+    assert not list(projected.triples((None, RDF.subject, None)))
+
+
+def test_invalid_iri_is_rejected(mod):
+    graph = Graph()
+    graph.add((URIRef("http://example.org/has space"), RDF.type, OWL.Class))
+    with pytest.raises(ValueError, match="Invalid IRI"):
+        mod.validate_graph_iris(graph)

@@ -1,449 +1,775 @@
-# KG simplifier — notebook cell
-from rdflib import Graph, Namespace, URIRef, RDF, RDFS, OWL
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Build a class-only MAKAAO lite graph.
+
+The current MAKAAO build separates:
+  * the canonical KG, which contains domain instances, reification, provenance,
+    and dataset metadata; and
+  * the strict merged TBox, which contains the selected external class schema.
+
+This script combines only the useful parts of those two files:
+  * named classes;
+  * rdfs:label and skos:prefLabel;
+  * named rdfs:subClassOf links; and
+  * selected domain relationships projected from instance-to-instance links to
+    class-to-class links.
+
+It intentionally excludes reification, PROV, dataset metadata, imports,
+anonymous OWL expressions, and all individuals. Every resource occurring as a
+relationship endpoint in the output is explicitly declared owl:Class.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import os
+import re
+import tempfile
+from collections import Counter, defaultdict
+from pathlib import Path
+from typing import Iterable
+
+from rdflib import BNode, Graph, Literal, Namespace, OWL, RDF, RDFS, URIRef
 from rdflib.namespace import SKOS
 
-# ---- Paths ----
-version = "1.0.3" #from makaao_core_29-07-2026.xlsx
-IN_PATH = f"../kg/makg-core_{version}.rdf"
-OUT_PATH = f"../kg/makg-core_lite_{version}.rdf"
 
-#IN_PATH = f"../kg/makaao_kg_sample.rdf"
-#OUT_PATH = f"../kg/makaao_kg_lite_sample.rdf"
+SCRIPT_VERSION = "2.0.8"
 
-# ---- Namespaces ----
-MAK = Namespace("http://makaao.inria.fr/kg/")
+# ----------------------------- Namespaces -----------------------------
+MAKAAO = Namespace("http://makaao.inria.fr/kg/")
+MAKAAO_LOINC = Namespace("http://makaao.inria.fr/loinc/")
 OBO = Namespace("http://purl.obolibrary.org/obo/")
-UNI = Namespace("http://purl.uniprot.org/core/")
+UNIPROT_CORE = Namespace("http://purl.uniprot.org/core/")
 SIO = Namespace("http://semanticscience.org/resource/")
-BIOL = Namespace("https://w3id.org/biolink/vocab/")
+BIOLINK = Namespace("https://w3id.org/biolink/vocab/")
 BAO = Namespace("http://www.bioassayontology.org/bao#")
 PROV = Namespace("http://www.w3.org/ns/prov#")
 ORDO = Namespace("http://www.orpha.net/ORDO/")
+UMLS = Namespace("http://uts.nlm.nih.gov/uts/umls/concept/")
 
-# ---- Important URIs ----
-CHEBI_23367 = URIRef(OBO["CHEBI_23367"])  # chebi : molecular entity
-PROTEIN = URIRef(UNI["Protein"])
-TARGET = URIRef(MAK["Target"])
-AUTOIMMUNE_DZ = URIRef(MAK["AutoimmuneDisease"])
-ORPHANET_C001 = URIRef(ORDO["Orphanet_C001"])  # orphanet : disease
-EXCLUDE_CLASSES = {URIRef(MAK["Document"]), URIRef(MAK["Relation"])}
+CHEBI_MOLECULAR_ENTITY = OBO["CHEBI_23367"]
+UNIPROT_PROTEIN = UNIPROT_CORE["Protein"]
+ORDO_DISEASE_ROOT = ORDO["Orphanet_C001"]
 
-# ---- Whitelists ----
-KEEP_PRED = {RDFS.label, SKOS.prefLabel, RDFS.subClassOf}
-REL_PRED = {
-    SIO["SIO_001403"],  # is_associated_with
-    BIOL["biomarker_for"],
-    BIOL["has_biomarker"],
-    BAO["BAO_0000598"],  # is_target_for
-    BAO["BAO_0000211"],  # has_target
-    SIO["SIO_001279"],  # has_phenotype
-    SIO["SIO_001280"],  # is_phenotype_of
+EXCLUDED_CLASSES = {MAKAAO.Document, MAKAAO.Relation}
+GENERIC_INSTANCE_TYPES = {
+    RDF.Statement,
+    OWL.NamedIndividual,
+    SKOS.Concept,
+    MAKAAO.Document,
+    MAKAAO.Relation,
+    MAKAAO.Target,
+    MAKAAO.AutoimmuneDisease,
+    MAKAAO.AutoantibodyPositivity,
+    MAKAAO.CUI,
 }
 
+# Domain predicates retained in the class-only graph. Molecular-target links
+# use the two official BAO predicates only.
+RELATION_PREDICATES = {
+    SIO["SIO_001403"],       # is associated with
+    SIO["SIO_001279"],       # has phenotype
+    SIO["SIO_001280"],       # is phenotype of
+    BIOLINK.biomarker_for,
+    MAKAAO.hasLoincComponent,
+    SKOS.closeMatch,
+    BAO["BAO_0000598"],      # is target for
+    BAO["BAO_0000211"],      # has target
+}
 
-# ---- Helpers ----
-def tail(u: URIRef):
-    return str(u).rsplit("/", 1)[-1]  # keep onlu slug of URI
+# Inverses materialized in the lite graph to preserve bidirectional access.
+# Duplicate triples are automatically ignored.
+INVERSE_PREDICATES = {
+    BIOLINK.biomarker_for: BIOLINK.has_biomarker,
+    BIOLINK.has_biomarker: BIOLINK.biomarker_for,
+    SIO["SIO_001279"]: SIO["SIO_001280"],
+    SIO["SIO_001280"]: SIO["SIO_001279"],
+    BAO["BAO_0000598"]: BAO["BAO_0000211"],
+    BAO["BAO_0000211"]: BAO["BAO_0000598"],
+}
 
+ALLOWED_OUTPUT_PREDICATES = {
+    RDF.type,
+    RDFS.label,
+    RDFS.subClassOf,
+    SKOS.prefLabel,
+    *RELATION_PREDICATES,
+    *INVERSE_PREDICATES.values(),
+}
 
-def is_uri(x):
-    return isinstance(x, URIRef)  # check if something is an URI
-
-
-def is_prov(x):
-    return is_uri(x) and str(x).startswith(
-        str(PROV)
-    )  # check if something has a PROV: URI
-
-
-def is_instance_uri(
-    u: URIRef,
-):  # check if URI is an instance (Document_/Relation_ or ends with _instance) (check this works in every case ??)
-    s = str(u)
-    if s.endswith("_instance"):
-        return True
-    if s.startswith(str(MAK)):
-        t = tail(u)
-        if t.startswith("document_"):
-            return True
-        if t.startswith("r") and t[1:].isdigit():
-            return True
-    return False
-
-
-def strip_instance(u: URIRef):  # remove _instance at end of URI
-    s = str(u)
-    return URIRef(s[:-9]) if s.endswith("_instance") else None
-
-
-def copy_labels_from_instance(
-    src_inst: URIRef, dst_class: URIRef, outg: Graph, gsrc: Graph
-):
-    for o in gsrc.objects(src_inst, RDFS.label):
-        outg.add(
-            (dst_class, RDFS.label, o)
-        )  # copy labels of an instance of full KG, to a class in simplified KG
-    for o in gsrc.objects(
-        src_inst, SKOS.prefLabel
-    ):  # copy labels of an instance of full KG, to a class in simplified KG
-        outg.add((dst_class, SKOS.prefLabel, o))
+REIFICATION_PREDICATES = {RDF.subject, RDF.predicate, RDF.object}
 
 
-def has_label(
-    gx: Graph, node: URIRef
-):  # check if an item has at least 1 label rdfs:label or skos:prefLabel
-    for _ in gx.objects(node, RDFS.label):
-        return True
-    for _ in gx.objects(node, SKOS.prefLabel):
-        return True
-    return False
+# ----------------------------- Paths -----------------------------
+def find_project_dir(start: Path) -> Path:
+    """Find the project root from project/, scripts/, or scripts/04/."""
+    for candidate in (start, *start.parents):
+        if (candidate / "data").is_dir():
+            return candidate
+    raise RuntimeError(
+        f"Could not locate the MAKAAO project root above {start}; "
+        "expected a data/ directory."
+    )
 
 
-def cui_class_of(u: URIRef):  # get the CUI URI, from a CUI instance in full KG
-    s = str(u)
-    if "/concept/C" in s:
-        return URIRef(s[:-9]) if s.endswith("_instance") else URIRef(s)
+def read_builder_kg_version(project_dir: Path, script_dir: Path) -> str | None:
+    """Read KG_VERSION from the main builder without importing/executing it."""
+    candidates = (
+        script_dir / "03_build_kg_from_tables.py",
+        project_dir / "scripts" / "03_build_kg_from_tables.py",
+        project_dir / "03_build_kg_from_tables.py",
+    )
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (OSError, SyntaxError, UnicodeError):
+            continue
+        for node in tree.body:
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if not any(isinstance(t, ast.Name) and t.id == "KG_VERSION" for t in targets):
+                continue
+            value = node.value
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                return value.value
     return None
 
 
-# ---- Load source graph ----
-g = Graph()
-g.parse(IN_PATH)  # load input KG
+def discover_canonical_kg(kg_dir: Path) -> Path:
+    """Select the only canonical makaao_kg_<version>.rdf file in kg/."""
+    candidates = []
+    for path in kg_dir.glob("makaao_kg_*.rdf"):
+        name = path.name
+        if any(
+            marker in name
+            for marker in (
+                "_lite",
+                "_no-reification",
+                "_import-closure",
+                "_curated-",
+            )
+        ):
+            continue
+        candidates.append(path)
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        raise FileNotFoundError(f"No canonical makaao_kg_*.rdf found in {kg_dir}")
+    names = "\n  ".join(sorted(p.name for p in candidates))
+    raise RuntimeError(
+        "More than one canonical KG candidate was found; specify --input explicitly:\n  "
+        + names
+    )
 
-# Precompute types
-types_by_node = {}
-for s, o in g.subject_objects(RDF.type):
-    if is_prov(s) or is_prov(o):
-        continue
-    types_by_node.setdefault(s, set()).add(o)  # filter out PROV type items
 
-# Promotions: local UniProt instances UP_*_instance -> UP_* (reuse labels)
-promotion_UP_local = {
-    n: strip_instance(n)
-    for n in types_by_node  # associate Uniprot instances to their classes URI
-    if is_uri(n)
-    and str(n).startswith(str(MAK))
-    and tail(n).startswith("UP_")
-    and strip_instance(n) is not None  # check if we can strip _instance
-}
-promotion_map = dict(promotion_UP_local)
+def default_paths() -> tuple[Path, Path, Path | None]:
+    script_dir = Path(__file__).resolve().parent
+    project_dir = find_project_dir(script_dir)
+    kg_dir = project_dir / "kg"
+    version = read_builder_kg_version(project_dir, script_dir)
+
+    if version:
+        input_path = kg_dir / f"makaao_kg_{version}.rdf"
+        if not input_path.is_file():
+            input_path = discover_canonical_kg(kg_dir)
+    else:
+        input_path = discover_canonical_kg(kg_dir)
+        version = input_path.name[len("makaao_kg_") : -len(".rdf")]
+
+    output_path = kg_dir / f"makaao_kg_{version}_lite.rdf"
+    merged_tbox = (
+        kg_dir
+        / "reasoning"
+        / f"makaao_kg_{version}_curated-tbox-merged.owl"
+    )
+    if not merged_tbox.is_file():
+        fallback = kg_dir / f"makaao_kg_{version}_ontology.owl"
+        merged_tbox = fallback if fallback.is_file() else None
+    return input_path, output_path, merged_tbox
 
 
-def to_class(node: URIRef):
-    """Resolve instance→class with explicit rules."""
-    if not is_uri(node):
+# ----------------------------- RDF helpers -----------------------------
+def tail(term: URIRef) -> str:
+    return str(term).rsplit("/", 1)[-1]
+
+
+def is_prov_term(term) -> bool:
+    return isinstance(term, URIRef) and str(term).startswith(str(PROV))
+
+
+def is_instance_uri(term) -> bool:
+    if not isinstance(term, URIRef):
+        return False
+    text = str(term)
+    slug = tail(term)
+    if text.endswith("_instance"):
+        return True
+    if text.startswith(str(MAKAAO)):
+        lowered = slug.lower()
+        if lowered.startswith(("document_", "relation_")):
+            return True
+        if slug.startswith("r") and slug[1:].isdigit():
+            return True
+    return False
+
+
+def is_named_class_candidate(term) -> bool:
+    return (
+        isinstance(term, URIRef)
+        and not is_instance_uri(term)
+        and not is_prov_term(term)
+        and term not in EXCLUDED_CLASSES
+    )
+
+
+def is_hpo_class(term: URIRef) -> bool:
+    return str(term).startswith(str(OBO)) and tail(term).startswith("HP_")
+
+
+def is_chebi_class(term: URIRef) -> bool:
+    return str(term).startswith(str(OBO)) and tail(term).startswith("CHEBI_")
+
+
+def is_ordo_class(term: URIRef) -> bool:
+    return str(term).startswith(str(ORDO)) and tail(term).startswith("Orphanet_")
+
+
+def is_local_up_class(term: URIRef) -> bool:
+    return str(term).startswith(str(MAKAAO)) and tail(term).startswith("UP_")
+
+
+def is_cui_class(term: URIRef) -> bool:
+    text = str(term)
+    slug = tail(term)
+    return (
+        (text.startswith(str(MAKAAO)) and slug.startswith("CUI_C"))
+        or "/concept/C" in text
+    )
+
+
+def fallback_class_from_instance(node: URIRef) -> URIRef | None:
+    """Fallback for older/current MAKAAO naming when rdf:type is incomplete."""
+    slug = tail(node)
+    if not slug.endswith("_instance"):
+        return None
+    stem = slug[: -len("_instance")]
+
+    if stem == "aab_18":
+        return MAKAAO.Autoantibody
+    if stem.startswith("orpha_") and stem[len("orpha_") :].isdigit():
+        return ORDO[f"Orphanet_{stem[len('orpha_'):]}"]
+    if stem.startswith("hpo_HP_"):
+        return OBO[stem[len("hpo_") :]]
+    if stem.startswith("CHEBI_"):
+        return OBO[stem]
+    if stem.startswith("loinc_"):
+        return MAKAAO_LOINC[stem[len("loinc_") :]]
+    return MAKAAO[stem]
+
+
+def build_types_index(graph: Graph) -> dict[URIRef, set[URIRef]]:
+    result: dict[URIRef, set[URIRef]] = defaultdict(set)
+    for subject, obj in graph.subject_objects(RDF.type):
+        if isinstance(subject, URIRef) and isinstance(obj, URIRef):
+            result[subject].add(obj)
+    return result
+
+
+def choose_projection_class(
+    node,
+    types_by_node: dict[URIRef, set[URIRef]],
+) -> URIRef | None:
+    """Map a relationship endpoint from an individual to its domain class."""
+    if not isinstance(node, URIRef):
         return None
     if not is_instance_uri(node):
-        return node
-    t = tail(node)
-    s = str(node)
+        return node if is_named_class_candidate(node) else None
 
-    if node in promotion_map:  # uniprot nistance to class dict
-        return promotion_map[node]
-    if t.startswith("CHEBI_"):
-        chebi_id = (
-            t[:-9] if t.endswith("_instance") else t
-        )  # remove _instance at end of chebi id
-        return URIRef(str(OBO) + chebi_id)  # reconstruct class chebi URI
-    if "/concept/C" in s and s.endswith(
-        "_instance"
-    ):  # if we have a CUI instance, we remove instance: we obtain a UMLS URI
-        base = strip_instance(node)
-        if base is not None:
-            return base
-    if t.startswith("orpha_") and t.endswith(
-        "_instance"
-    ):  # if we detect an orphanet instance
-        num = t[len("orpha_") : -len("_instance")]  # we extract the orphanet number
-        if num.isdigit():
-            return URIRef(
-                str(ORDO) + f"Orphanet_{num}"
-            )  # we reconstruct the orphanet class URI with the number
-    if t.startswith("positivity_") and t.endswith(
-        "_instance"
-    ):  # if we detect a positivity instance
-        ts = types_by_node.get(node, set())
-        for u in ts:  # for each type of that positivity instance
-            if str(u).startswith(str(OBO)) and tail(u).startswith(
-                "HP_"
-            ):  # we check if the type is an HP class, if yes we get that URI
-                return u  # e.g., HP_0034117
-        return strip_instance(node)  # else we just strip _instance
-    if s.startswith(str(MAK)) and t.endswith(
-        "_instance"
-    ):  # if we have a local MAK (like an AAb class) instance
-        return strip_instance(node)
+    candidates = {
+        rdf_type
+        for rdf_type in types_by_node.get(node, set())
+        if is_named_class_candidate(rdf_type)
+        and rdf_type not in GENERIC_INSTANCE_TYPES
+        and rdf_type
+        not in {
+            OWL.Class,
+            OWL.ObjectProperty,
+            OWL.DatatypeProperty,
+            OWL.AnnotationProperty,
+        }
+    }
 
-    # 7) No rule matched
-    return None
+    # Positivity individuals can have both a local positivity class and an HPO
+    # class. The historical simplifier deliberately preferred the HPO class.
+    if tail(node).startswith("positivity_"):
+        hpo_candidates = sorted((c for c in candidates if is_hpo_class(c)), key=str)
+        if hpo_candidates:
+            return hpo_candidates[0]
+
+    if len(candidates) == 1:
+        return next(iter(candidates))
+
+    fallback = fallback_class_from_instance(node)
+    if fallback in candidates:
+        return fallback
+
+    if not candidates:
+        return fallback
+
+    raise RuntimeError(
+        "Ambiguous instance-to-class projection for "
+        f"{node}: {', '.join(sorted(map(str, candidates)))}"
+    )
 
 
-def all_nodes(gx: Graph):
-    nodes = set()
-    for s, p, o in gx:
-        nodes.add(s)
-        nodes.add(o)  #  get all subject-object pairs in a graph
+def copy_labels(source_graphs: Iterable[Graph], class_iri: URIRef, output: Graph) -> None:
+    for source in source_graphs:
+        for predicate in (RDFS.label, SKOS.prefLabel):
+            for value in source.objects(class_iri, predicate):
+                if isinstance(value, Literal):
+                    output.add((class_iri, predicate, value))
+
+
+def has_label(graph: Graph, class_iri: URIRef) -> bool:
+    return any(graph.objects(class_iri, RDFS.label)) or any(
+        graph.objects(class_iri, SKOS.prefLabel)
+    )
+
+
+def all_class_nodes(graph: Graph) -> set[URIRef]:
+    nodes: set[URIRef] = set()
+    for subject, predicate, obj in graph:
+        if predicate == RDF.type and obj == OWL.Class and isinstance(subject, URIRef):
+            nodes.add(subject)
+        elif predicate == RDFS.subClassOf:
+            if isinstance(subject, URIRef):
+                nodes.add(subject)
+            if isinstance(obj, URIRef):
+                nodes.add(obj)
+        elif predicate in RELATION_PREDICATES or predicate in INVERSE_PREDICATES.values():
+            if isinstance(subject, URIRef):
+                nodes.add(subject)
+            if isinstance(obj, URIRef):
+                nodes.add(obj)
     return nodes
 
 
-# ---- Build simplified graph ----
-out = Graph()  # start new empty graph
+# ----------------------------- Projection -----------------------------
+def collect_schema_classes(schema: Graph) -> set[URIRef]:
+    classes = {
+        subject
+        for subject in schema.subjects(RDF.type, OWL.Class)
+        if is_named_class_candidate(subject)
+    }
+    for subject, obj in schema.subject_objects(RDFS.subClassOf):
+        if is_named_class_candidate(subject) and is_named_class_candidate(obj):
+            classes.add(subject)
+            classes.add(obj)
+    return classes
 
 
-def involves_prov(
-    s, p, o
-):  # check if any of the subject, predicate or object is a PROV URI
-    return is_prov(s) or is_prov(p) or is_prov(o)
+def build_lite_graph(data: Graph, schema: Graph) -> tuple[Graph, dict]:
+    output = Graph()
+    for prefix, namespace in (
+        ("mak", MAKAAO),
+        ("mloinc", MAKAAO_LOINC),
+        ("rdfs", RDFS),
+        ("owl", OWL),
+        ("skos", SKOS),
+        ("hp", OBO),
+        ("ordo", ORDO),
+        ("sio", SIO),
+        ("biolink", BIOLINK),
+        ("bao", BAO),
+        ("up", UNIPROT_CORE),
+    ):
+        output.bind(prefix, namespace)
+
+    types_by_node = build_types_index(data)
+    schema_classes = collect_schema_classes(schema)
+
+    # Named class schema only: declarations, labels and named subclass links.
+    for class_iri in sorted(schema_classes, key=str):
+        output.add((class_iri, RDF.type, OWL.Class))
+        copy_labels((schema, data), class_iri, output)
+
+    for subject, obj in schema.subject_objects(RDFS.subClassOf):
+        if (
+            subject in schema_classes
+            and obj in schema_classes
+            and subject != obj
+            and not is_prov_term(subject)
+            and not is_prov_term(obj)
+        ):
+            output.add((subject, RDFS.subClassOf, obj))
+
+    relation_counts: Counter[str] = Counter()
+    endpoint_projection: dict[URIRef, URIRef] = {}
+    skipped_relationships = 0
+
+    for predicate in sorted(RELATION_PREDICATES, key=str):
+        for subject, obj in data.subject_objects(predicate):
+            subject_class = choose_projection_class(subject, types_by_node)
+            object_class = choose_projection_class(obj, types_by_node)
+            if subject_class is None or object_class is None:
+                skipped_relationships += 1
+                continue
+            if subject_class in EXCLUDED_CLASSES or object_class in EXCLUDED_CLASSES:
+                skipped_relationships += 1
+                continue
+            if is_prov_term(subject_class) or is_prov_term(object_class):
+                skipped_relationships += 1
+                continue
+
+            output.add((subject_class, RDF.type, OWL.Class))
+            output.add((object_class, RDF.type, OWL.Class))
+            output.add((subject_class, predicate, object_class))
+            relation_counts[str(predicate)] += 1
+
+            if isinstance(subject, URIRef) and is_instance_uri(subject):
+                endpoint_projection[subject] = subject_class
+            if isinstance(obj, URIRef) and is_instance_uri(obj):
+                endpoint_projection[obj] = object_class
+
+            inverse = INVERSE_PREDICATES.get(predicate)
+            if inverse is not None:
+                output.add((object_class, inverse, subject_class))
+
+    # Reuse individual labels only when the selected class has no class label.
+    for instance, class_iri in endpoint_projection.items():
+        if has_label(output, class_iri):
+            continue
+        copy_labels((data,), instance, output)
+
+    role_by_class: dict[URIRef, set[URIRef]] = defaultdict(set)
+    for instance, class_iri in endpoint_projection.items():
+        for rdf_type in types_by_node.get(instance, set()):
+            if rdf_type in {
+                MAKAAO.Target,
+                MAKAAO.AutoimmuneDisease,
+                MAKAAO.AutoantibodyPositivity,
+            }:
+                role_by_class[class_iri].add(rdf_type)
+
+    force_historical_constraints(output, role_by_class)
+    purge_excluded_resources(output)
+    ensure_every_endpoint_is_a_class(output)
+
+    relationship_predicates = RELATION_PREDICATES | set(INVERSE_PREDICATES.values())
+    output_relation_counts = Counter(
+        str(predicate)
+        for _, predicate, _ in output
+        if predicate in relationship_predicates
+    )
+
+    report = {
+        "input_triples": len(data),
+        "schema_triples": len(schema),
+        "output_triples": len(output),
+        "classes": len(set(output.subjects(RDF.type, OWL.Class))),
+        "projected_instances": len(endpoint_projection),
+        "skipped_relationships": skipped_relationships,
+        "relationship_source_counts": dict(sorted(relation_counts.items())),
+        "relationship_output_counts": dict(sorted(output_relation_counts.items())),
+    }
+    return output, report
 
 
-# 1) Copy whitelisted class-level triples, excluding Document/Relation
-for s, p, o in g:
-    if involves_prov(s, p, o):  # we don't add to the new graph triples with PROV:
-        continue
-    if (
-        p not in KEEP_PRED
-    ):  # we don't add in the new graph triples with non whitelisted predicates
-        continue
-    if (
-        isinstance(s, URIRef) and not is_instance_uri(s) and s not in EXCLUDE_CLASSES
-    ):  # if a subject URI is not an instance, and not in excluded class: we add the triple
-        out.add((s, p, o))
+def force_historical_constraints(
+    output: Graph,
+    role_by_class: dict[URIRef, set[URIRef]],
+) -> None:
+    """Preserve the hierarchy normalization performed by the old script."""
+    classes = all_class_nodes(output)
 
-# Keep explicit owl:Class declarations, excluding banned classes
-for s, o in g.subject_objects(RDF.type):  # we check triple with rdf:type predicate only
-    if is_prov(s) or is_prov(o):  # skip it  if subject or object is PROV
-        continue
-    if (
-        o == OWL.Class
-        and isinstance(s, URIRef)
-        and not is_instance_uri(s)
-        and s not in EXCLUDE_CLASSES
-    ):  #  if object is Class, subject is not instance, not excluded class
-        out.add((s, RDF.type, OWL.Class))  # we add it
+    # ChEBI target branch: selected ChEBI classes -> molecular entity -> Target.
+    chebi_classes = {node for node in classes if is_chebi_class(node)}
+    for class_iri in chebi_classes - {CHEBI_MOLECULAR_ENTITY}:
+        output.remove((class_iri, RDFS.subClassOf, None))
+        output.add((class_iri, RDFS.subClassOf, CHEBI_MOLECULAR_ENTITY))
+        output.add((class_iri, RDF.type, OWL.Class))
+    if chebi_classes:
+        output.remove((CHEBI_MOLECULAR_ENTITY, RDFS.subClassOf, None))
+        output.add((CHEBI_MOLECULAR_ENTITY, RDFS.subClassOf, MAKAAO.Target))
+        output.add((CHEBI_MOLECULAR_ENTITY, RDF.type, OWL.Class))
+        output.add((MAKAAO.Target, RDF.type, OWL.Class))
 
-# 2) Rewire selected predicates from instance→class
-for s, p, o in g:  # for each triple in source graph
-    if p not in REL_PRED or involves_prov(
-        s, p, o
-    ):  # if triple not using an allowed predicate, or involves PROV, skip
-        continue
-    s_cls = to_class(s)  # get class URI of subject
-    o_cls = to_class(o)  # get class URI of object
-    if s_cls is None or o_cls is None:  # if we can't get class URI, we skip
-        continue
-    if is_instance_uri(s_cls) or is_instance_uri(
-        o_cls
-    ):  # if we still have an instnce URI, we skip
-        continue
-    if (
-        s_cls in EXCLUDE_CLASSES or o_cls in EXCLUDE_CLASSES
-    ):  # if either subject or object class is in excluded classes, we skip
-        continue
-    out.add((s_cls, p, o_cls))  # else, we add the rewired triple to the new graph
+    # Local UniProt classes -> UniProt Protein -> Target.
+    local_up_classes = {node for node in classes if is_local_up_class(node)}
+    for class_iri in local_up_classes:
+        output.remove((class_iri, RDFS.subClassOf, None))
+        output.add((class_iri, RDFS.subClassOf, UNIPROT_PROTEIN))
+        output.add((class_iri, RDF.type, OWL.Class))
+    if local_up_classes:
+        output.remove((UNIPROT_PROTEIN, RDFS.subClassOf, None))
+        output.add((UNIPROT_PROTEIN, RDFS.subClassOf, MAKAAO.Target))
+        output.add((UNIPROT_PROTEIN, RDF.type, OWL.Class))
+        output.add((MAKAAO.Target, RDF.type, OWL.Class))
 
-# 2b) Reuse labels for UniProt promotions on their classes
-for inst, cls in promotion_map.items():
-    copy_labels_from_instance(
-        inst, cls, out, g
-    )  # copy labels from instance to Uniprot class in new graph
+    # ORDO selected classes -> ORDO disease root -> AutoimmuneDisease.
+    ordo_classes = {node for node in classes if is_ordo_class(node)}
+    for class_iri in ordo_classes - {ORDO_DISEASE_ROOT}:
+        output.remove((class_iri, RDFS.subClassOf, None))
+        output.add((class_iri, RDFS.subClassOf, ORDO_DISEASE_ROOT))
+        output.add((class_iri, RDF.type, OWL.Class))
+    if ordo_classes:
+        output.remove((ORDO_DISEASE_ROOT, RDFS.subClassOf, None))
+        output.add((ORDO_DISEASE_ROOT, RDFS.subClassOf, MAKAAO.AutoimmuneDisease))
+        output.add((ORDO_DISEASE_ROOT, RDF.type, OWL.Class))
+        output.add((MAKAAO.AutoimmuneDisease, RDF.type, OWL.Class))
 
-
-# ---- Build CUI classification sets from source graph (direct + reified) ----
-def build_cui_sets(gsrc: Graph):
-    cui_target, cui_disease, cui_all = set(), set(), set()
-
-    def note(node):
-        c = cui_class_of(
-            node
-        )  # get CUI class from instance, add it to set of all CUI classes
-        if c is not None:
-            cui_all.add(c)
-        return c
-
-    # direct triples,we have to check using predicate, othewise we would not know if that CUI is a Target or a Disease
-    for s, p, o in gsrc:  # for all triples in orginal graph
-        if p in (
-            BAO["BAO_0000211"],
-            BAO["BAO_0000598"],
-        ):  # if predicate is "is_target_of" or "has_target"
-            for n in (s, o):
-                c = note(n)  # we try to get CUI class from subject or object
-                if c is not None:
-                    cui_target.add(c)
-        elif p == SIO["SIO_001403"]:  # if predicate is "is_related_to"
-            for n in (s, o):
-                c = note(n)
-                if c is not None:  # we try to get CUI class from subject or object
-                    cui_disease.add(
-                        c
-                    )  # if we got a CUI class, it is necessarily form at disease (the other end of that relation would ba an aab)
-
-    return cui_all, cui_target, cui_disease
+    # UMLS CUI classes: disease takes priority over target, matching the old
+    # simplifier. Current KGs use local CUI_C... class IRIs; old KGs used UMLS
+    # concept IRIs, and both are supported.
+    cui_classes = {node for node in classes if is_cui_class(node)}
+    for class_iri in cui_classes:
+        output.remove((class_iri, RDFS.subClassOf, None))
+        roles = role_by_class.get(class_iri, set())
+        parent = (
+            MAKAAO.AutoimmuneDisease
+            if MAKAAO.AutoimmuneDisease in roles
+            else MAKAAO.Target
+        )
+        output.add((class_iri, RDFS.subClassOf, parent))
+        output.add((class_iri, RDF.type, OWL.Class))
+        output.add((parent, RDF.type, OWL.Class))
 
 
-cui_all, cui_target, cui_disease = build_cui_sets(
-    g
-)  # call function on original graphn to get CUI classes that are DIeases, and those that are Targets
+def purge_excluded_resources(output: Graph) -> None:
+    for banned in EXCLUDED_CLASSES:
+        output.remove((banned, None, None))
+        output.remove((None, None, banned))
+
+    for triple in list(output):
+        subject, predicate, obj = triple
+        if predicate not in ALLOWED_OUTPUT_PREDICATES:
+            output.remove(triple)
+            continue
+        if isinstance(subject, BNode) or isinstance(obj, BNode):
+            output.remove(triple)
+            continue
+        if is_prov_term(subject) or is_prov_term(predicate) or is_prov_term(obj):
+            output.remove(triple)
+            continue
+        if is_instance_uri(subject) or is_instance_uri(obj):
+            output.remove(triple)
+            continue
+        if predicate in REIFICATION_PREDICATES:
+            output.remove(triple)
+            continue
+        if predicate == RDF.type and obj != OWL.Class:
+            output.remove(triple)
+            continue
+        if predicate in {RDFS.label, SKOS.prefLabel} and not isinstance(obj, Literal):
+            output.remove(triple)
+            continue
+        if predicate == RDFS.subClassOf and not isinstance(obj, URIRef):
+            output.remove(triple)
 
 
-# 3) Enforce constraints
-def force_constraints(outg: Graph):
-    nodes = all_nodes(outg)  # get all subject-object pairs in new graph
+def ensure_every_endpoint_is_a_class(output: Graph) -> None:
+    class_nodes = all_class_nodes(output)
+    for class_iri in class_nodes:
+        if class_iri not in EXCLUDED_CLASSES and not is_prov_term(class_iri):
+            output.add((class_iri, RDF.type, OWL.Class))
 
-    # CHEBI normalization
-    chebis = {
-        n for n in nodes if isinstance(n, URIRef) and tail(n).startswith("CHEBI_")
-    }  # we get all triples involving chebi classes
 
-    # Non-root CHEBI_* ⊑ CHEBI_23367 only
-    for c in chebis - {CHEBI_23367}:  # for all these chebi class, except root chebi
-        for _, _, o in list(
-            outg.triples((c, RDFS.subClassOf, None))
-        ):  # we check their superclass
-            if o != CHEBI_23367:
-                outg.remove(
-                    (c, RDFS.subClassOf, o)
-                )  # and we rmeove them, if not root chebi
-        outg.add(
-            (c, RDFS.subClassOf, CHEBI_23367)
-        )  # we make them subclasses of root chebi only
-        outg.add((c, RDF.type, OWL.Class))
+# ----------------------------- Validation/output -----------------------------
+def validate_lite_graph(graph: Graph) -> None:
+    errors: list[str] = []
 
-    # Root: CHEBI_23367 ⊑ Target only
-    for _, _, o in list(
-        outg.triples((CHEBI_23367, RDFS.subClassOf, None))
-    ):  # we check superclasses of root chebi
-        if o != TARGET:
-            outg.remove(
-                (CHEBI_23367, RDFS.subClassOf, o)
-            )  # we remove them if not target
-    outg.add(
-        (CHEBI_23367, RDFS.subClassOf, TARGET)
-    )  # we add Target as only superclass of root chebi
-    outg.add((CHEBI_23367, RDF.type, OWL.Class))
+    for subject, predicate, obj in graph:
+        if predicate not in ALLOWED_OUTPUT_PREDICATES:
+            errors.append(f"unexpected predicate: {predicate}")
+        if isinstance(subject, BNode) or isinstance(obj, BNode):
+            errors.append(f"blank node retained: {(subject, predicate, obj)}")
+        if is_instance_uri(subject) or is_instance_uri(obj):
+            errors.append(f"instance URI retained: {(subject, predicate, obj)}")
+        if is_prov_term(subject) or is_prov_term(predicate) or is_prov_term(obj):
+            errors.append(f"PROV term retained: {(subject, predicate, obj)}")
+        if subject in EXCLUDED_CLASSES or obj in EXCLUDED_CLASSES:
+            errors.append(f"excluded resource retained: {(subject, predicate, obj)}")
+        if predicate == RDF.type and obj != OWL.Class:
+            errors.append(f"non-class rdf:type retained: {(subject, predicate, obj)}")
+        if predicate in REIFICATION_PREDICATES:
+            errors.append(f"reification predicate retained: {predicate}")
 
-    # --- UniProt local UP_* classes ---
-    for u in [
-        n
-        for n in nodes
-        if isinstance(n, URIRef)
-        and str(n).startswith(str(MAK))
-        and tail(n).startswith("UP_")
-    ]:  # check new uniprot classes
-        for _, _, o in list(
-            outg.triples((u, RDFS.subClassOf, None))
-        ):  # check what are their superclass
-            outg.remove((u, RDFS.subClassOf, o))  # remove existing subclass relations
-        outg.add((u, RDFS.subClassOf, PROTEIN))  # make them subclass of protein
-        outg.add((u, RDF.type, OWL.Class))  # make them class
+    declared_classes = set(graph.subjects(RDF.type, OWL.Class))
+    for subject, predicate, obj in graph:
+        if predicate in RELATION_PREDICATES or predicate in INVERSE_PREDICATES.values():
+            if subject not in declared_classes or obj not in declared_classes:
+                errors.append(
+                    f"relationship endpoint lacks owl:Class declaration: "
+                    f"{(subject, predicate, obj)}"
+                )
+        if predicate == RDFS.subClassOf:
+            if subject not in declared_classes or obj not in declared_classes:
+                errors.append(
+                    f"subclass endpoint lacks owl:Class declaration: "
+                    f"{(subject, predicate, obj)}"
+                )
 
-    # Protein ⊑ Target only
-    for _, _, o in list(
-        outg.triples((PROTEIN, RDFS.subClassOf, None))
-    ):  # check superclasses of Protein class
-        outg.remove((PROTEIN, RDFS.subClassOf, o))  # remove them
-    outg.add(
-        (PROTEIN, RDFS.subClassOf, TARGET)
-    )  # make Protein class subclass of Target
-    outg.add((PROTEIN, RDF.type, OWL.Class))  # Protein and Target are class
-    outg.add((TARGET, RDF.type, OWL.Class))
+    if errors:
+        preview = "\n  ".join(errors[:25])
+        suffix = "" if len(errors) <= 25 else f"\n  ... {len(errors) - 25} more"
+        raise RuntimeError(
+            f"Lite graph validation failed with {len(errors)} issue(s):\n  "
+            + preview
+            + suffix
+        )
 
-    # --- Orphanet classes ---
-    for ocls in [
-        n
-        for n in nodes
-        if isinstance(n, URIRef)
-        and str(n).startswith(str(ORDO))
-        and tail(n).startswith("Orphanet_")
-    ]:  # we get all triples involving ORDO classes
-        for _, _, o in list(
-            outg.triples((ocls, RDFS.subClassOf, None))
-        ):  # check their superclasses
-            outg.remove((ocls, RDFS.subClassOf, o))  # remove them all
-        if ocls != ORPHANET_C001:  # if the current orpha class is not root orpha
-            outg.add(
-                (ocls, RDFS.subClassOf, ORPHANET_C001)
-            )  # we make it subclass of root orpha
-        outg.add((ocls, RDF.type, OWL.Class))
-    for _, _, o in list(
-        outg.triples((ORPHANET_C001, RDFS.subClassOf, None))
-    ):  # check superclasses of rooot orpha
-        outg.remove((ORPHANET_C001, RDFS.subClassOf, o))  # we remove them all
-    outg.add(
-        (ORPHANET_C001, RDFS.subClassOf, AUTOIMMUNE_DZ)
-    )  # we make root_orpha subclass of autoimmuneDisease
-    outg.add((ORPHANET_C001, RDF.type, OWL.Class))
-    outg.add((AUTOIMMUNE_DZ, RDF.type, OWL.Class))
 
-    # --- UMLS CUI classes: classify by relations
-    # Priority: disease over target; default Target if unseen.
-    for c in cui_all:
-        for _, _, o in list(
-            outg.triples((c, RDFS.subClassOf, None))
-        ):  # we check superclasses of all CUI classes
-            outg.remove((c, RDFS.subClassOf, o))
-        if c in cui_disease:
-            outg.add(
-                (c, RDFS.subClassOf, AUTOIMMUNE_DZ)
-            )  # if it is invovled in the disease set, we make that CUI class a suclass of autoimmune disease
-        elif c in cui_target:
-            outg.add(
-                (c, RDFS.subClassOf, TARGET)
-            )  # if it is involved in the Target set, we make it subclass of Target
+def serialize_atomically(graph: Graph, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{output_path.name}.", suffix=".tmp", dir=output_path.parent
+    )
+    os.close(fd)
+    temporary_path = Path(temporary_name)
+    try:
+        graph.serialize(destination=str(temporary_path), format="xml")
+        check = Graph()
+        try:
+            check.parse(temporary_path, format="xml")
+            if len(check) != len(graph):
+                raise RuntimeError(
+                    f"RDF/XML round-trip count mismatch: {len(graph)} != {len(check)}"
+                )
+            validate_lite_graph(check)
+        finally:
+            check.close()
+        os.replace(temporary_path, output_path)
+        try:
+            output_path.chmod(0o644)
+        except OSError:
+            # Some Windows-mounted WSL filesystems ignore POSIX mode changes.
+            pass
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Create a class-only MAKAAO lite graph from the current full KG."
+    )
+    parser.add_argument(
+        "--input",
+        type=Path,
+        default=None,
+        help="canonical full KG; auto-discovered from the project when omitted",
+    )
+    parser.add_argument(
+        "--schema",
+        type=Path,
+        default=None,
+        help=(
+            "merged TBox used for labels and class hierarchy; derived from the "
+            "input path or project when omitted"
+        ),
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="lite RDF/XML output; derived from the input path when omitted",
+    )
+    return parser.parse_args()
+
+
+def derive_paths_from_explicit_input(input_path: Path) -> tuple[Path, Path]:
+    """Derive output and schema paths without requiring a project checkout."""
+    name = input_path.name
+    match = re.fullmatch(r"makaao_kg_(.+)\.rdf", name)
+    if match:
+        version = match.group(1)
+        output_path = input_path.with_name(f"makaao_kg_{version}_lite.rdf")
+        merged_tbox = (
+            input_path.parent
+            / "reasoning"
+            / f"makaao_kg_{version}_curated-tbox-merged.owl"
+        )
+        ontology_fallback = input_path.with_name(
+            f"makaao_kg_{version}_ontology.owl"
+        )
+        if merged_tbox.is_file():
+            schema_path = merged_tbox
+        elif ontology_fallback.is_file():
+            schema_path = ontology_fallback
         else:
-            outg.add((c, RDFS.subClassOf, TARGET))
-        # outg.add((c, RDF.type, OWL.Class)) # if the CUI is not linked to disease or target, e don't add it anywhere
-        pass
+            schema_path = input_path
+        return output_path, schema_path
 
-    # --- Remove Document and Relation classes entirely ---
-    for banned in EXCLUDE_CLASSES:
-        for t in list(
-            outg.triples((banned, None, None))
-        ):  # remove all triples where a banned class is subject or object, just to make sure
-            outg.remove(t)
-        for t in list(outg.triples((None, None, banned))):
-            outg.remove(t)
+    return (
+        input_path.with_name(f"{input_path.stem}_lite{input_path.suffix}"),
+        input_path,
+    )
 
 
-force_constraints(out)  # call function tha tapplies constraints to new KG
+def main() -> None:
+    args = parse_args()
+
+    if args.input is None:
+        default_input, default_output, default_schema = default_paths()
+        input_choice = default_input
+        output_choice = args.output or default_output
+        schema_choice = args.schema or default_schema or default_input
+    else:
+        input_choice = args.input
+        derived_output, derived_schema = derive_paths_from_explicit_input(
+            input_choice.expanduser().resolve()
+        )
+        output_choice = args.output or derived_output
+        schema_choice = args.schema or derived_schema
+
+    input_path = input_choice.expanduser().resolve()
+    output_path = output_choice.expanduser().resolve()
+    schema_path = schema_choice.expanduser().resolve()
+
+    if not input_path.is_file():
+        raise FileNotFoundError(f"Canonical KG not found: {input_path}")
+    if not schema_path.is_file():
+        raise FileNotFoundError(f"Schema graph not found: {schema_path}")
+    if input_path == output_path:
+        raise ValueError("Input and output paths must be different")
+
+    data = Graph()
+    schema = Graph()
+    try:
+        data.parse(input_path)
+        if schema_path == input_path:
+            schema = data
+        else:
+            schema.parse(schema_path)
+
+        lite, report = build_lite_graph(data, schema)
+        validate_lite_graph(lite)
+        serialize_atomically(lite, output_path)
+    finally:
+        if schema is not data:
+            schema.close()
+        data.close()
+
+    print(f"MAKAAO lite build complete: script={SCRIPT_VERSION}")
+    print(f"Input KG:       {input_path}")
+    print(f"Schema graph:   {schema_path}")
+    print(f"Output:         {output_path}")
+    print(f"Input triples:  {report['input_triples']}")
+    print(f"Schema triples: {report['schema_triples']}")
+    print(f"Output triples: {report['output_triples']}")
+    print(f"Classes:        {report['classes']}")
+    print(f"Projected instances: {report['projected_instances']}")
+    print(f"Skipped relationships: {report['skipped_relationships']}")
+    print("Class-level relationship source counts:")
+    for predicate, count in report["relationship_source_counts"].items():
+        print(f"  {predicate}: {count}")
+    print("Final class-level relationship counts:")
+    for predicate, count in report["relationship_output_counts"].items():
+        print(f"  {predicate}: {count}")
 
 
-# Ensure CUI classes have labels (copy from source class first, then from *_instance)
-def ensure_cui_labels(outg: Graph, gsrc: Graph):
-    nodes = all_nodes(outg)  # get all subject-objects from new KG
-    cui_classes = [
-        n
-        for n in nodes
-        if isinstance(n, URIRef)
-        and "/concept/C" in str(n)
-        and not str(n).endswith("_instance")
-    ]  # all CUI classes
-    for c in cui_classes:  # go through these classes
-        if has_label(outg, c):  # if it has label, skip
-            continue
-        for o in gsrc.objects(
-            c, RDFS.label
-        ):  # if that class has label in input graph, we add it
-            outg.add((c, RDFS.label, o))
-        for o in gsrc.objects(c, SKOS.prefLabel):  # same for pre flabel
-            outg.add((c, SKOS.prefLabel, o))
-        if has_label(outg, c):  # if has label now, skip
-            continue
-        inst = URIRef(
-            str(c) + "_instance"
-        )  # if still no label, we go look for labels in the instances of that class in original KG
-        for o in gsrc.objects(inst, RDFS.label):
-            outg.add((c, RDFS.label, o))
-        for o in gsrc.objects(inst, SKOS.prefLabel):
-            outg.add((c, SKOS.prefLabel, o))
-
-
-ensure_cui_labels(out, g)  # call the function tha tmakes sure CUI classes have labels
-
-
-# 4) Serialize
-out.serialize(destination=OUT_PATH, format="application/rdf+xml")  # export to rdf file
-
-print("Input triples:", len(g))  # display how many tripls we get
-print("Output triples:", len(out))
-print("Wrote:", OUT_PATH)
+if __name__ == "__main__":
+    main()

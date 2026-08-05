@@ -1,0 +1,13 @@
+[run]
+source = scripts
+relative_files = true
+
+[report]
+include =
+    scripts/02_create_enrichment_tables.py
+    scripts/03_build_kg_from_tables.py
+    scripts/03-1_build_reasoning_release.py
+    scripts/04_make_lite_graph_from_makaao-kg.py
+fail_under = 75
+show_missing = true
+precision = 1
