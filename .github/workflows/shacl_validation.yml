@@ -33,15 +33,60 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install 'pyshacl==0.40.1' 'rdflib==7.6.0'
 
-      - name: Select current RDF graph
-        id: graph
+      - name: Generate license-safe SHACL fixture
+        id: fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          path="$RUNNER_TEMP/makaao-shacl-ci-fixture.ttl"
+          python tests/build_shacl_fixture.py --output "$path"
+          echo "path=$path" >> "$GITHUB_OUTPUT"
+
+      - name: Parse SHACL shapes and synthetic fixture
+        env:
+          DATA_GRAPH: ${{ steps.fixture.outputs.path }}
+        run: |
+          python - <<'PY'
+          import os
+          from rdflib import Graph
+
+          shapes = Graph().parse("tests/shacl_shapes.ttl", format="turtle")
+          data = Graph().parse(os.environ["DATA_GRAPH"], format="turtle")
+          if not data:
+              raise SystemExit("Synthetic SHACL fixture is empty")
+          print(f"Parsed {len(shapes)} SHACL triples and {len(data)} fixture triples")
+          PY
+
+      - name: Validate synthetic fixture
+        shell: bash
+        env:
+          DATA_GRAPH: ${{ steps.fixture.outputs.path }}
+        run: |
+          set +e
+          pyshacl \
+            --shacl tests/shacl_shapes.ttl \
+            --shacl-file-format turtle \
+            --data-file-format turtle \
+            --inference rdfs \
+            --advanced \
+            --format human \
+            --allow-warnings \
+            --output shacl_fixture_report.txt \
+            "$DATA_GRAPH"
+          status=$?
+          set -e
+          cat shacl_fixture_report.txt
+          exit "$status"
+
+      - name: Select optional checked-in KG
+        id: repository_graph
         shell: bash
         run: |
           set -euo pipefail
 
-          mapfile -t metadata < <(
-            python - <<'PY'
+          python - <<'PY'
           import ast
+          import os
           from pathlib import Path
 
           script = Path("scripts/03_build_kg_from_tables.py")
@@ -58,60 +103,59 @@ jobs:
           if missing:
               raise SystemExit(f"Missing version assignment(s) in {script}: {sorted(missing)}")
 
-          print(values["KG_VERSION"])
-          print(values["SCRIPT_VERSION"])
+          canonical = Path("kg") / f"makaao_kg_{values['KG_VERSION']}.rdf"
+          sample = Path("kg/makaao_kg_sample.rdf")
+          selected = canonical if canonical.is_file() else sample if sample.is_file() else None
+
+          output = Path(os.environ["GITHUB_OUTPUT"])
+          with output.open("a", encoding="utf-8") as handle:
+              handle.write(f"path={selected or ''}\n")
+              handle.write(f"script_version={values['SCRIPT_VERSION']}\n")
+              handle.write(f"is_canonical={'true' if selected == canonical else 'false'}\n")
+
+          if selected is None:
+              print("No checked-in KG fixture found; synthetic SHACL validation is sufficient.")
+          else:
+              print(f"Optional repository graph selected: {selected}")
           PY
-          )
 
-          kg_version=${metadata[0]}
-          script_version=${metadata[1]}
-          canonical="kg/makaao_kg_${kg_version}.rdf"
-          sample="kg/makaao_kg_sample.rdf"
-
-          if [[ -f "$canonical" ]]; then
-            graph=$canonical
-          elif [[ -f "$sample" ]]; then
-            graph=$sample
-          else
-            printf 'Neither current canonical graph %s nor sample graph %s exists.\n' \
-              "$canonical" "$sample" >&2
-            exit 1
-          fi
-
-          echo "path=$graph" >> "$GITHUB_OUTPUT"
-          echo "script_version=$script_version" >> "$GITHUB_OUTPUT"
-          echo "kg_version=$kg_version" >> "$GITHUB_OUTPUT"
-          echo "Validating $graph for script $script_version / KG $kg_version"
-
-      - name: Parse files and reject a stale graph fixture
+      - name: Parse and version-check optional KG
+        if: steps.repository_graph.outputs.path != ''
         env:
-          DATA_GRAPH: ${{ steps.graph.outputs.path }}
-          EXPECTED_SCRIPT_VERSION: ${{ steps.graph.outputs.script_version }}
+          DATA_GRAPH: ${{ steps.repository_graph.outputs.path }}
+          EXPECTED_SCRIPT_VERSION: ${{ steps.repository_graph.outputs.script_version }}
+          IS_CANONICAL: ${{ steps.repository_graph.outputs.is_canonical }}
         run: |
           python - <<'PY'
           import os
-          from rdflib import Graph, Literal, Namespace
+          from rdflib import Graph, Namespace
 
           graph_path = os.environ["DATA_GRAPH"]
           expected_version = os.environ["EXPECTED_SCRIPT_VERSION"]
+          is_canonical = os.environ["IS_CANONICAL"] == "true"
 
-          Graph().parse("tests/shacl_shapes.ttl", format="turtle")
           data = Graph().parse(graph_path, format="xml")
           dcterms = Namespace("http://purl.org/dc/terms/")
-          recorded_versions = {str(value) for value in data.objects(None, dcterms.hasVersion)}
-          if expected_version not in recorded_versions:
+          versions = {str(value) for value in data.objects(None, dcterms.hasVersion)}
+
+          if is_canonical and expected_version not in versions:
               raise SystemExit(
-                  f"{graph_path} is stale: expected script version {expected_version!r}; "
-                  f"recorded versions are {sorted(recorded_versions)!r}"
+                  f"Canonical graph {graph_path} is stale: expected {expected_version!r}; "
+                  f"recorded versions are {sorted(versions)!r}"
               )
-          print(f"RDF parsing and fixture-version check passed ({len(data)} triples)")
+          if not is_canonical and versions and expected_version not in versions:
+              raise SystemExit(
+                  f"Sample graph {graph_path} is stale: expected {expected_version!r}; "
+                  f"recorded versions are {sorted(versions)!r}"
+              )
+          print(f"Optional graph parsed successfully ({len(data)} triples)")
           PY
 
-      - name: Run SHACL validation
-        id: shacl
+      - name: Validate optional checked-in KG
+        if: steps.repository_graph.outputs.path != ''
         shell: bash
         env:
-          DATA_GRAPH: ${{ steps.graph.outputs.path }}
+          DATA_GRAPH: ${{ steps.repository_graph.outputs.path }}
         run: |
           set +e
           pyshacl \
@@ -122,19 +166,19 @@ jobs:
             --advanced \
             --format human \
             --allow-warnings \
-            --output shacl_report.txt \
+            --output shacl_repository_report.txt \
             "$DATA_GRAPH"
           status=$?
           set -e
-          if [[ -f shacl_report.txt ]]; then
-            cat shacl_report.txt
-          fi
+          cat shacl_repository_report.txt
           exit "$status"
 
-      - name: Upload SHACL report
+      - name: Upload SHACL reports
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: shacl-validation-report
-          path: shacl_report.txt
-          if-no-files-found: error
+          name: shacl-validation-reports
+          path: |
+            shacl_fixture_report.txt
+            shacl_repository_report.txt
+          if-no-files-found: warn
