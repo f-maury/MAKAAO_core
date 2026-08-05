@@ -46,4 +46,8 @@
 For licensing reasons, some files that you would need to correctly run the scripts are not included in this repository. These are:
    * `data/en_product4.xml`, obtained from Orphanet (https://www.orphadata.com/data/xml/en_product4.xml)
    * `data/MRCONSO.RRF`, obtained from the UMLS (https://www.nlm.nih.gov/research/umls/licensedcontent/umlsknowledgesources.html)
+   * `data/LoincPartLink_Primary`, obtained from the UMLS (https://loinc.org/downloads)
+   * Ontology files located in `data/external_ontologies`: BAO, Biolink, ChEBI, HPO, ORDO, PROV-O, SIO, SKOS, Uniprot.
    * `data/makaao_core.xlsx`
+
+You need an Internet connection to run these scripts: when terminology labels associated to a terminology item cannot be locally found, an API will be queried for them.
