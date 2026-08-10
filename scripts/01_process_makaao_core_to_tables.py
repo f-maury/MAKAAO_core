@@ -6,7 +6,8 @@ from typing import Iterable, List, Sequence, Tuple
 import pandas as pd
 
 # =========================== DEFINE PATHS ===========================
-INP = Path("../data/makaao_core.csv")  # makaao core table
+#INP = Path("../data/makaao_core.csv")  # makaao core table
+INP = Path("../data/makaao_sample.csv")  # makaao sample
 OUT_DIR = Path("../data/processed_tables/")  # where we will store processed tables
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
