@@ -26,6 +26,7 @@ def build_fixture() -> Graph:
     autoantibody_class = MAKAAO["TestAutoantibody"]
     autoantibody = MAKAAO["test_autoantibody_instance"]
     disease = MAKAAO["test_disease_instance"]
+    positivity_class = MAKAAO["positivity_test"]
     phenotype = MAKAAO["test_phenotype_instance"]
     target = MAKAAO["test_target_instance"]
     local_umls = MAKAAO["CUI_C0000001"]
@@ -36,6 +37,19 @@ def build_fixture() -> Graph:
     graph.add((autoantibody_class, RDF.type, OWL.Class))
     graph.add((autoantibody_class, RDFS.subClassOf, MAKAAO.Autoantibody))
     graph.add((autoantibody_class, RDFS.label, Literal("Test autoantibody class")))
+
+    graph.add((BIOLINK.PhenotypicFeature, RDF.type, OWL.Class))
+    graph.add((MAKAAO.AutoantibodyPositivity, RDF.type, OWL.Class))
+    graph.add(
+        (
+            MAKAAO.AutoantibodyPositivity,
+            RDFS.subClassOf,
+            BIOLINK.PhenotypicFeature,
+        )
+    )
+    graph.add((positivity_class, RDF.type, OWL.Class))
+    graph.add((positivity_class, RDFS.subClassOf, MAKAAO.AutoantibodyPositivity))
+    graph.add((positivity_class, RDFS.label, Literal("Test positivity class")))
 
     graph.add((autoantibody, RDF.type, autoantibody_class))
     graph.add((autoantibody, RDFS.label, Literal("Test autoantibody")))
@@ -49,6 +63,8 @@ def build_fixture() -> Graph:
 
     graph.add((autoantibody, SIO.SIO_001279, phenotype))
     graph.add((phenotype, SIO.SIO_001280, autoantibody))
+    graph.add((phenotype, RDF.type, positivity_class))
+    graph.add((phenotype, BIOLINK.has_biomarker, autoantibody))
     graph.add((phenotype, RDFS.label, Literal("Test phenotype")))
 
     graph.add((target, RDF.type, MAKAAO.Target))
@@ -88,9 +104,21 @@ def assert_fixture_exercises_shapes(graph: Graph) -> None:
         "is phenotype of": (None, SIO.SIO_001280, None),
         "has target": (None, BAO.BAO_0000211, None),
         "is target of": (None, BAO.BAO_0000598, None),
+        "biomarker for": (None, BIOLINK.biomarker_for, None),
+        "has biomarker": (None, BIOLINK.has_biomarker, None),
         "target instance": (None, RDF.type, MAKAAO.Target),
         "disease instance": (None, RDF.type, MAKAAO.AutoimmuneDisease),
         "autoantibody subclass": (None, RDFS.subClassOf, MAKAAO.Autoantibody),
+        "positivity subclass": (
+            None,
+            RDFS.subClassOf,
+            MAKAAO.AutoantibodyPositivity,
+        ),
+        "phenotypic-feature hierarchy": (
+            MAKAAO.AutoantibodyPositivity,
+            RDFS.subClassOf,
+            BIOLINK.PhenotypicFeature,
+        ),
     }
     missing = [name for name, triple in required.items() if triple not in graph]
     if missing:

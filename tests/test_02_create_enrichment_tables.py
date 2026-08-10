@@ -51,13 +51,12 @@ def configure_paths(mod, monkeypatch, data_dir: Path):
         "ENRICH_DIR": str(enrichment),
         "IN_PATH": str(data_dir / "MRCONSO.RRF"),
         "XML_PATH": str(data_dir / "en_product4.xml"),
-        "INPUT_CSV_CORE": str(data_dir / "makaao_core.csv"),
+        "INPUT_CSV_CORE": str(data_dir / "makaao_sample.csv"),
         "LOINC_PART_LINK_CSV": str(data_dir / "LoincPartLink_Primary.csv"),
         "OUT_ORPHA_LINKS": str(enrichment / "orphanet_hpo_links.csv"),
         "OUT_ORPHA_UMLS_MAPPINGS": str(enrichment / "orpha_umls_mappings.json"),
         "OUTPUT_CSV_FINAL": str(enrichment / "code_names.csv"),
         "OUT_LOINC_PART_TESTS": str(enrichment / "loinc_part_test_dict.json"),
-        "OUT_LOINC_LABELS": str(enrichment / "loinc_labels.json"),
         "REPORT_PATH": str(enrichment / "enrichment_report.md"),
     }
     for name, value in assignments.items():
@@ -91,9 +90,9 @@ def test_02_pipeline_uses_committed_sample_without_network(
 
     # Use the repository's committed, license-safe sample as the real core input.
     # Only external/licensed resources are replaced by tiny local fixtures.
-    shutil.copyfile(sample_core_path, data_dir / "makaao_core.csv")
+    shutil.copyfile(sample_core_path, Path(mod.INPUT_CSV_CORE))
     copied_core = pd.read_csv(
-        data_dir / "makaao_core.csv",
+        mod.INPUT_CSV_CORE,
         dtype=str,
         keep_default_na=False,
         low_memory=False,
@@ -183,6 +182,13 @@ def test_02_pipeline_uses_committed_sample_without_network(
             label="Example disease",
         ),
         mrconso_row(
+            cui=cui,
+            sab="MTH",
+            code="SYNONYM",
+            label="Example disease synonym",
+            tty="SY",
+        ),
+        mrconso_row(
             cui="C1000001", sab="HPO", code=hpo, label="Example phenotype"
         ),
         mrconso_row(
@@ -206,14 +212,25 @@ def test_02_pipeline_uses_committed_sample_without_network(
     part_tests = json.loads(Path(mod.OUT_LOINC_PART_TESTS).read_text(encoding="utf-8"))
     assert part_tests[loinc_part] == [loinc_term]
 
-    labels = json.loads(Path(mod.OUT_LOINC_LABELS).read_text(encoding="utf-8"))
-    assert labels["parts"][loinc_part]
-    assert labels["tests"][loinc_term] == "Example laboratory test"
-
     code_names = pd.read_csv(mod.OUTPUT_CSV_FINAL, keep_default_na=False)
-    assert set(code_names.columns) == {"source", "id", "name", "url"}
+    assert set(code_names.columns) == {"source", "id", "name", "synonyms_en", "url"}
+    umls_row = code_names.loc[
+        (code_names["source"] == "UMLS") & (code_names["id"] == cui)
+    ].iloc[0]
+    assert umls_row["name"] == "Example disease"
+    assert json.loads(umls_row["synonyms_en"]) == ["Example disease synonym"]
     actual_sources = set(code_names["source"])
     assert {"UMLS", "HPO", "ORPHA", "ChEBI", "LOINC"} <= actual_sources
+
+    # code_names.csv is the sole label source consumed by script 03 for both
+    # LOINC Parts and linked LOINC Terms. No separate loinc_labels.json exists.
+    loinc_names = {
+        str(row.id): str(row.name)
+        for row in code_names.loc[code_names["source"] == "LOINC"].itertuples()
+    }
+    assert loinc_names[loinc_part] == "Example LOINC part"
+    assert loinc_names[loinc_term] == "Example laboratory test"
+    assert not (enrichment / "loinc_labels.json").exists()
 
     # When the committed sample contains a UniProt identifier, script 02 must
     # still emit UniProt rows even though live API calls are disabled.
@@ -225,4 +242,3 @@ def test_02_pipeline_uses_committed_sample_without_network(
     assert Path(mod.OUT_ORPHA_LINKS).is_file()
     assert Path(mod.REPORT_PATH).is_file()
     assert enrichment.is_dir()
-

@@ -231,9 +231,37 @@ makaao:BAOTargetReverseInverseShape
         """ ;
     ] .
 
-# The canonical full KG asserts biolink:biomarker_for only.
-# biolink:has_biomarker is materialized by script 04 in the lite graph and is
-# tested in test_04_make_lite_graph.py rather than required here.
+makaao:BiomarkerInverseShape
+    a sh:NodeShape ;
+    sh:targetSubjectsOf biolink:biomarker_for ;
+    sh:sparql [
+        a sh:SPARQLConstraint ;
+        sh:message "biolink:biomarker_for must have the corresponding biolink:has_biomarker inverse assertion." ;
+        sh:select """
+            PREFIX biolink: <https://w3id.org/biolink/vocab/>
+            SELECT $this ?phenotype
+            WHERE {
+              $this biolink:biomarker_for ?phenotype .
+              FILTER NOT EXISTS { ?phenotype biolink:has_biomarker $this }
+            }
+        """ ;
+    ] .
+
+makaao:BiomarkerReverseInverseShape
+    a sh:NodeShape ;
+    sh:targetSubjectsOf biolink:has_biomarker ;
+    sh:sparql [
+        a sh:SPARQLConstraint ;
+        sh:message "biolink:has_biomarker must have the corresponding biolink:biomarker_for inverse assertion." ;
+        sh:select """
+            PREFIX biolink: <https://w3id.org/biolink/vocab/>
+            SELECT $this ?autoantibody
+            WHERE {
+              $this biolink:has_biomarker ?autoantibody .
+              FILTER NOT EXISTS { ?autoantibody biolink:biomarker_for $this }
+            }
+        """ ;
+    ] .
 
 ######################################################################
 # Domain-resource integrity
@@ -246,6 +274,10 @@ makaao:TargetShape
         sh:path bao:BAO_0000598 ;
         sh:minCount 1 ;
         sh:nodeKind sh:IRI ;
+        sh:qualifiedValueShape [
+            sh:class makaao:Autoantibody ;
+        ] ;
+        sh:qualifiedMinCount 1 ;
         sh:message "Each Target instance must be the target of at least one autoantibody." ;
     ] .
 
@@ -262,7 +294,11 @@ makaao:AutoimmuneDiseaseShape
         sh:path sio:SIO_001403 ;
         sh:minCount 1 ;
         sh:nodeKind sh:IRI ;
-        sh:message "Each autoimmune-disease instance must have an SIO_001403 association." ;
+        sh:qualifiedValueShape [
+            sh:class makaao:Autoantibody ;
+        ] ;
+        sh:qualifiedMinCount 1 ;
+        sh:message "Each autoimmune-disease instance must have an SIO_001403 association to at least one autoantibody instance." ;
     ] .
 
 makaao:AutoantibodyBiomarkerShape
@@ -289,5 +325,36 @@ makaao:AutoantibodyBiomarkerShape
         sh:path biolink:biomarker_for ;
         sh:minCount 1 ;
         sh:nodeKind sh:IRI ;
-        sh:message "Each autoantibody instance must be a biomarker for at least one phenotype." ;
+        sh:qualifiedValueShape [
+            sh:class biolink:PhenotypicFeature ;
+        ] ;
+        sh:qualifiedMinCount 1 ;
+        sh:message "Each autoantibody instance must be linked by biolink:biomarker_for to at least one phenotypic-feature instance." ;
+    ] .
+
+makaao:PositivityHasBiomarkerShape
+    a sh:NodeShape ;
+    sh:target [
+        a sh:SPARQLTarget ;
+        sh:select """
+            PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+            PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+            PREFIX makaao: <http://makaao.inria.fr/kg/>
+            SELECT ?this
+            WHERE {
+              ?this rdf:type ?type .
+              ?type rdfs:subClassOf* makaao:AutoantibodyPositivity .
+            }
+        """ ;
+    ] ;
+    sh:nodeKind sh:IRI ;
+    sh:property [
+        sh:path biolink:has_biomarker ;
+        sh:minCount 1 ;
+        sh:nodeKind sh:IRI ;
+        sh:qualifiedValueShape [
+            sh:class makaao:Autoantibody ;
+        ] ;
+        sh:qualifiedMinCount 1 ;
+        sh:message "Each local positivity instance must be linked by biolink:has_biomarker to at least one autoantibody instance." ;
     ] .

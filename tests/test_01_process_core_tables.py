@@ -55,4 +55,5 @@ def test_load_core_and_write_some_outputs(tmp_path, sample_core_path):
     ):
         path = output_dir / filename
         assert path.is_file()
-        assert sum(1 for _ in path.open("r", encoding="utf-8")) >= 2
+        with path.open("r", encoding="utf-8") as handle:
+            assert sum(1 for _ in handle) >= 2

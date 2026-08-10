@@ -33,13 +33,22 @@ def add_class(graph, iri, label, parent=None):
     graph.add((iri, RDFS.label, Literal(label)))
 
 
+def mark_as_target_class(graph, mod, class_iri, suffix):
+    instance = mod.MAKAAO[f"test_target_{suffix}_instance"]
+    graph.add((instance, RDF.type, class_iri))
+    graph.add((instance, RDF.type, mod.MAKAAO.Target))
+    return instance
+
+
 def test_current_script_version_and_reasoning_helper_are_synchronized(mod):
     helper = load_module(
         Path("scripts/03-1_build_reasoning_release.py"), "reasoning_helper_version"
     )
-    assert mod.SCRIPT_VERSION == "1.2.28"
     assert helper.SCRIPT_VERSION == mod.SCRIPT_VERSION
-    assert helper.SCRIPT_ITERATION == mod.SCRIPT_ITERATION
+    # Each script records its own implementation iteration. Only the public
+    # compatibility version is required to match.
+    assert isinstance(mod.SCRIPT_ITERATION, str) and mod.SCRIPT_ITERATION
+    assert isinstance(helper.SCRIPT_ITERATION, str) and helper.SCRIPT_ITERATION
 
 
 def test_identifier_normalizers(mod):
@@ -66,13 +75,43 @@ def test_label_deduplication_and_cui_fallbacks(mod):
     assert mod.validate_local_cui_labels(graph) == 2
 
 
-def test_exact_label_audit_searches_only_the_three_permitted_kind_pairs(mod, tmp_path):
+def test_umls_synonyms_from_code_names_are_alt_labels(mod, tmp_path):
+    code_names = tmp_path / "code_names.csv"
+    code_names.write_text(
+        'source,id,name,synonyms_en,url\n'
+        'UMLS,C7654321,Preferred name,"[""Alternative name"",""  Second   alias  ""]",https://uts.nlm.nih.gov/uts/umls/concept/C7654321\n',
+        encoding="utf-8",
+    )
+
+    synonyms = mod.read_code_names_umls_synonyms(code_names)
+    assert synonyms == {"C7654321": ("Alternative name", "Second alias")}
+
+    graph = fresh_graph(mod)
+    cui_class, cui_instance = mod.ensure_cui_class_and_instance(
+        graph,
+        "C7654321",
+        preferred_label="Preferred name",
+        synonyms=synonyms["C7654321"],
+    )
+    for resource in (cui_class, cui_instance):
+        assert Literal("Preferred name") in set(graph.objects(resource, SKOS.prefLabel))
+        assert Literal("Preferred name") in set(graph.objects(resource, RDFS.label))
+        assert Literal("Alternative name") in set(graph.objects(resource, SKOS.altLabel))
+        assert Literal("Second alias") in set(graph.objects(resource, SKOS.altLabel))
+        assert Literal("Alternative name") not in set(graph.objects(resource, RDFS.label))
+
+
+def test_exact_label_audit_links_only_permitted_pairs_and_reports_the_rest(
+    mod, tmp_path
+):
     graph = fresh_graph(mod)
 
     cui_protein = mod.MAKAAO["CUI_C0000001"]
     uniprot = mod.MAKAAO["UP_P12345"]
     add_class(graph, cui_protein, "Protein X", mod.MAKAAO.CUI)
     add_class(graph, uniprot, "  protein   x  ")
+    mark_as_target_class(graph, mod, cui_protein, "cui_protein")
+    mark_as_target_class(graph, mod, uniprot, "uniprot_protein")
 
     antibody = mod.MAKAAO["aab_1"]
     loinc_part = mod.MAKAAO_LOINC["LP12345-6"]
@@ -95,37 +134,40 @@ def test_exact_label_audit_searches_only_the_three_permitted_kind_pairs(mod, tmp
     add_class(graph, third_uniprot, "Same UniProt label")
 
     rows = mod.add_label_collision_close_matches(graph)
-    assert len(rows) == 3
-    assert {row["decision"] for row in rows} == {"linked"}
-    assert sum(int(row["close_match_triples_added"]) for row in rows) == 6
+    assert len(rows) == 5
+    linked_rows = [row for row in rows if row["decision"] == "linked"]
+    review_rows = [row for row in rows if row["decision"] == "review_required"]
+    assert len(linked_rows) == 2
+    assert len(review_rows) == 3
+    assert sum(int(row["close_match_triples_added"]) for row in rows) == 4
     expected_kind_pairs = frozenset(
         {
             frozenset({"umls_cui", "uniprot"}),
             frozenset({"autoantibody", "loinc_part"}),
-            frozenset({"ordo_disease", "umls_cui"}),
         }
     )
-    assert mod.LABEL_MATCH_KIND_PAIRS == expected_kind_pairs
     assert {
-        frozenset((row["class_1_kind"], row["class_2_kind"])) for row in rows
+        frozenset((row["class_1_kind"], row["class_2_kind"]))
+        for row in linked_rows
     } == expected_kind_pairs
 
     for left, right in (
         (cui_protein, uniprot),
         (antibody, loinc_part),
-        (ordo, cui_disease),
     ):
         assert (left, SKOS.closeMatch, right) in graph
         assert (right, SKOS.closeMatch, left) in graph
 
+    assert (ordo, SKOS.closeMatch, cui_disease) not in graph
+    assert (cui_disease, SKOS.closeMatch, ordo) not in graph
     assert (hpo, SKOS.closeMatch, chebi) not in graph
     assert (second_uniprot, SKOS.closeMatch, third_uniprot) not in graph
 
     report = tmp_path / "class-label-close-match-report.tsv"
     mod.write_label_collision_report(rows, report)
     text = report.read_text(encoding="utf-8")
-    assert "review_required" not in text
-    assert text.count("\n") == 4
+    assert "review_required" in text
+    assert text.count("\n") == 6
 
 
 
@@ -155,26 +197,35 @@ def test_exact_label_audit_excludes_all_other_kind_combinations(mod):
     )
     add_class(graph, resources["hpo"], shared_label)
     add_class(graph, resources["chebi"], shared_label)
+    mark_as_target_class(graph, mod, resources["umls_cui"], "all_cui")
+    mark_as_target_class(graph, mod, resources["uniprot"], "all_uniprot")
+    mark_as_target_class(graph, mod, resources["chebi"], "all_chebi")
 
     rows = mod.add_label_collision_close_matches(graph)
+    linked_rows = [row for row in rows if row["decision"] == "linked"]
     actual_pairs = {
         frozenset((row["class_1_kind"], row["class_2_kind"])) for row in rows
+        if row["decision"] == "linked"
     }
     expected_pairs = {
         frozenset({"umls_cui", "uniprot"}),
+        frozenset({"umls_cui", "chebi"}),
+        frozenset({"uniprot", "chebi"}),
         frozenset({"autoantibody", "loinc_part"}),
-        frozenset({"ordo_disease", "umls_cui"}),
     }
     assert actual_pairs == expected_pairs
-    assert len(rows) == 3
+    assert len(linked_rows) == 4
+    assert len(rows) == 21
 
     linked_resources = {
-        frozenset((URIRef(row["class_1"]), URIRef(row["class_2"]))) for row in rows
+        frozenset((URIRef(row["class_1"]), URIRef(row["class_2"])))
+        for row in linked_rows
     }
     expected_resources = {
         frozenset((resources["umls_cui"], resources["uniprot"])),
+        frozenset((resources["umls_cui"], resources["chebi"])),
+        frozenset((resources["uniprot"], resources["chebi"])),
         frozenset((resources["autoantibody"], resources["loinc_part"])),
-        frozenset((resources["ordo_disease"], resources["umls_cui"])),
     }
     assert linked_resources == expected_resources
 
@@ -204,6 +255,8 @@ def test_exact_label_audit_uses_pref_and_alt_labels(mod):
     graph.add((cui, SKOS.altLabel, Literal("  Alias   Protein ")))
     graph.add((uniprot, RDF.type, OWL.Class))
     graph.add((uniprot, SKOS.prefLabel, Literal("alias protein")))
+    mark_as_target_class(graph, mod, cui, "alt_cui")
+    mark_as_target_class(graph, mod, uniprot, "alt_uniprot")
 
     rows = mod.add_label_collision_close_matches(graph)
     assert len(rows) == 1
@@ -213,7 +266,7 @@ def test_exact_label_audit_uses_pref_and_alt_labels(mod):
     assert (uniprot, SKOS.closeMatch, cui) in graph
 
 
-def test_exact_label_audit_is_idempotent_for_existing_mappings(mod):
+def test_existing_unapproved_mapping_is_preserved_but_not_justified_by_label(mod):
     graph = fresh_graph(mod)
     ordo = URIRef("http://www.orpha.net/ORDO/Orphanet_999")
     cui = mod.MAKAAO["CUI_C0000999"]
@@ -224,8 +277,10 @@ def test_exact_label_audit_is_idempotent_for_existing_mappings(mod):
 
     rows = mod.add_label_collision_close_matches(graph)
     assert len(rows) == 1
-    assert rows[0]["decision"] == "linked"
+    assert rows[0]["decision"] == "review_required"
     assert rows[0]["close_match_triples_added"] == 0
+    assert (ordo, SKOS.closeMatch, cui) in graph
+    assert (cui, SKOS.closeMatch, ordo) in graph
 
 def test_orpha_umls_dictionary_must_be_symmetric(mod, tmp_path):
     path = tmp_path / "orpha_umls_mappings.json"
@@ -248,24 +303,20 @@ def test_empty_loinc_primary_array_creates_part_without_fabricated_term(mod, tmp
     index_csv.write_text("aab_id,loinc_id\n1,LP100-1\n", encoding="utf-8")
     mappings = tmp_path / "loinc_part_test_dict.json"
     mappings.write_text(json.dumps({"LP100-1": []}), encoding="utf-8")
-    labels = tmp_path / "loinc_labels.json"
-    labels.write_text(
-        json.dumps({"parts": {"LP100-1": "Example Part"}, "tests": {}}),
-        encoding="utf-8",
-    )
-
     mod.process_loinc_mappings(
         graph,
         str(index_csv),
         {"1"},
+        {"LP100-1": "Example Part"},
+        {},
         part_test_json=str(mappings),
-        labels_json=str(labels),
     )
 
     part_class = mod.MAKAAO_LOINC["LP100-1"]
     part_instance = mod.MAKAAO["loinc_LP100-1_instance"]
     assert (part_class, RDF.type, OWL.Class) in graph
     assert (part_instance, RDF.type, part_class) in graph
+    assert not list(graph.triples((None, mod.LOINC_COMPONENT, None)))
     assert not list(graph.triples((None, mod.MAKAAO.hasLoincComponent, None)))
 
 

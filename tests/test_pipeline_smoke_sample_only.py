@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import ast
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
-import pytest
-from rdflib import Graph, Literal, Namespace, OWL, RDF, RDFS, URIRef
+from rdflib import Graph, Literal, OWL, RDF, RDFS, URIRef
 
 
 def load_module(path: Path, name: str):
@@ -31,8 +30,15 @@ def _write_processed_tables(processor, frame, output_dir: Path) -> None:
     processor.write_index_loinc(frame, output_dir)
 
 
-def test_committed_sample_runs_through_01_03_and_04(sample_core_path, tmp_path):
-    """Exercise the public sample without private data or ontology downloads."""
+def test_committed_sample_generates_01_03_and_04_graphs(
+    sample_core_path, tmp_path, monkeypatch
+):
+    """Run scripts 01, core 03 graph construction, and 04 on the public sample.
+
+    Script 02 enrichment and script 03-1 release construction have dedicated
+    tests because their complete runs require large or licensed source files
+    and an external ROBOT/Java installation.
+    """
     processor = load_module(
         Path("scripts/01_process_makaao_core_to_tables.py"),
         "sample_pipeline_processor",
@@ -71,8 +77,11 @@ def test_committed_sample_runs_through_01_03_and_04(sample_core_path, tmp_path):
     data = build.load_processed_tables(str(processed))
     assert data["indices"], "The committed sample produced no retained indices"
 
+    # Keep this sample test hermetic: labels are deliberately allowed to fall
+    # back to identifiers instead of reading a developer's enrichment folder.
+    monkeypatch.setattr(build, "CODE_NAMES_CSV", str(tmp_path / "missing-code-names.csv"))
     graph = build.init_graph()
-    build.build_core(
+    positivity_instances_by_hpo = build.build_core(
         graph,
         data,
         {},  # UniProt labels: code fallbacks are sufficient for this smoke test.
@@ -83,18 +92,82 @@ def test_committed_sample_runs_through_01_03_and_04(sample_core_path, tmp_path):
         {},  # ChEBI labels and URLs.
         {},
     )
-    build.process_diseases(graph, data, {}, {}, {}, {})
-    build.validate_graph_iris(graph, "sample-driven smoke KG")
-    assert build.validate_local_cui_labels(graph) >= 0
+    build.process_diseases(
+        graph,
+        data,
+        {},
+        positivity_instances_by_hpo,
+        {},
+        {},
+        {},
+    )
 
-    projected = build.build_non_reified_graph(graph)
-    lite, stats = lite_builder.build_lite_graph(projected, projected)
+    # Exercise the current LOINC interface with Parts taken from the generated
+    # sample table. A single synthetic linked Term is sufficient to verify the
+    # official loinc:COMPONENT predicate without requiring licensed LOINC data.
+    loinc_rows = build.read_csv_rows(processed / "index_loinc.csv")
+    sample_parts = sorted(
+        {
+            part
+            for row in loinc_rows
+            if (row.get("aab_id") or "").strip() in data["indices"]
+            if (part := build.canonical_loinc_code(row.get("loinc_id"), "part"))
+        }
+    )
+    assert sample_parts, "The committed sample no longer exercises LOINC mappings"
+    linked_term = "1234-5"
+    part_tests_path = tmp_path / "loinc_part_test_dict.json"
+    part_tests = {
+        part: [linked_term] if part == sample_parts[0] else []
+        for part in sample_parts
+    }
+    part_tests_path.write_text(
+        json.dumps(part_tests, indent=2) + "\n", encoding="utf-8"
+    )
+    build.process_loinc_mappings(
+        graph,
+        str(processed / "index_loinc.csv"),
+        data["indices"],
+        {part: f"Sample LOINC Part {part}" for part in sample_parts},
+        {linked_term: "Synthetic linked LOINC Term"},
+        part_test_json=str(part_tests_path),
+    )
+
+    build.append_fair_metadata(graph)
+    build.add_label_collision_close_matches(graph)
+    canonical_path = tmp_path / "makaao_kg_sample.rdf"
+    build.set_output_file_metadata(graph, canonical_path.name)
+    build.validate_graph_iris(graph, "sample-driven smoke KG")
+    assert build.validate_local_cui_labels(graph) > 0
+
+    graph.serialize(canonical_path, format="xml")
+    generated = Graph().parse(canonical_path, format="xml")
+    tbox = build.extract_tbox(generated, str(build.MAKAAO))
+    projected = build.build_non_reified_graph(generated)
+    lite, stats = lite_builder.build_lite_graph(projected, tbox)
     lite_builder.validate_lite_graph(lite)
 
-    assert len(graph) > 0
+    biomarker_links = list(
+        generated.triples((None, build.BIOLINK.biomarker_for, None))
+    )
+    assert biomarker_links
+    for autoantibody, _, positivity in biomarker_links:
+        assert (positivity, build.BIOLINK.has_biomarker, autoantibody) in generated
+        assert str(positivity).startswith(str(build.MAKAAO) + "positivity_")
+        assert not any(
+            str(rdf_type).startswith("http://purl.obolibrary.org/obo/HP_")
+            for rdf_type in generated.objects(positivity, RDF.type)
+        )
+
+    assert list(generated.triples((None, build.LOINC_COMPONENT, None)))
+
+    assert len(generated) > 0
+    assert len(tbox) > 0
     assert len(projected) > 0
     assert len(lite) > 0
-    assert stats["projected_instances"] >= 0
+    assert stats["projected_instances"] > 0
+    assert stats["relationship_output_counts"][str(build.BIOLINK.biomarker_for)] > 0
+    assert stats["relationship_output_counts"][str(build.BIOLINK.has_biomarker)] > 0
 
 
 def test_03_non_reified_projection_is_accepted_by_04_lite_builder():
@@ -121,39 +194,3 @@ def test_03_non_reified_projection_is_accepted_by_04_lite_builder():
     lite, _ = lite_builder.build_lite_graph(projected, projected)
     lite_builder.validate_lite_graph(lite)
     assert (left_class, build.SIO["SIO_001403"], right_class) in lite
-
-
-def test_checked_in_sample_graph_is_parseable_when_present():
-    path = Path("kg/makaao_kg_sample.rdf")
-    if not path.is_file():
-        pytest.skip("kg/makaao_kg_sample.rdf is not present")
-    graph = Graph().parse(path)
-    assert len(graph) > 0
-    dcterms = Namespace("http://purl.org/dc/terms/")
-    versions = {str(value) for value in graph.objects(None, dcterms.hasVersion)}
-
-    # Legacy sample fixtures may predate dataset-version metadata. When metadata
-    # is present, it must agree with the current builder rather than a hard-coded
-    # version string.
-    if versions:
-        script_path = Path("scripts/03_build_kg_from_tables.py")
-        tree = ast.parse(
-            script_path.read_text(encoding="utf-8"),
-            filename=str(script_path),
-        )
-        expected = None
-        for node in tree.body:
-            if not isinstance(node, ast.Assign):
-                continue
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id == "SCRIPT_VERSION":
-                    expected = ast.literal_eval(node.value)
-                    break
-            if expected is not None:
-                break
-
-        assert expected is not None, "SCRIPT_VERSION is missing from script 03"
-        assert expected in versions, (
-            f"{path} is stale: expected script version {expected!r}; "
-            f"found {sorted(versions)!r}"
-        )

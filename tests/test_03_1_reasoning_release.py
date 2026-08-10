@@ -3,7 +3,7 @@ import importlib.util
 from pathlib import Path
 
 import pytest
-from rdflib import Graph, Literal, OWL, RDF, RDFS, URIRef
+from rdflib import BNode, Graph, Literal, OWL, RDF, RDFS, URIRef
 
 
 def load_module(path: Path, name: str):
@@ -117,6 +117,50 @@ def test_bao_validation_requires_both_object_properties(mod):
     module.remove((mod.BAO_IS_TARGET_FOR, RDF.type, OWL.ObjectProperty))
     with pytest.raises(RuntimeError, match="BAO module validation failed"):
         mod.validate_bao_target_properties(source, module)
+
+
+def test_biolink_biomarker_axioms_are_preserved_and_validated(mod):
+    source = Graph()
+    module = Graph()
+    autoantibody = URIRef("http://makaao.inria.fr/kg/Autoantibody")
+    phenotype = mod.BIOLINK.PhenotypicFeature
+    axioms = {
+        mod.BIOLINK.biomarker_for: (autoantibody, phenotype),
+        mod.BIOLINK.has_biomarker: (phenotype, autoantibody),
+    }
+    for prop, (domain, range_) in axioms.items():
+        for graph in (source, module):
+            graph.add((prop, RDF.type, OWL.ObjectProperty))
+            graph.add((prop, RDFS.domain, domain))
+            graph.add((prop, RDFS.range, range_))
+    for graph in (source, module):
+        graph.add(
+            (
+                mod.BIOLINK.biomarker_for,
+                OWL.inverseOf,
+                mod.BIOLINK.has_biomarker,
+            )
+        )
+
+    mod.validate_biolink_biomarker_axioms(source, module)
+
+    module.remove(
+        (
+            mod.BIOLINK.biomarker_for,
+            OWL.inverseOf,
+            mod.BIOLINK.has_biomarker,
+        )
+    )
+    with pytest.raises(RuntimeError, match="inverse axioms differ"):
+        mod.validate_biolink_biomarker_axioms(source, module)
+
+    anonymous_source = Graph()
+    anonymous_source += source
+    anonymous_source.set(
+        (mod.BIOLINK.biomarker_for, RDFS.range, BNode())
+    )
+    with pytest.raises(RuntimeError, match="anonymous"):
+        mod.validate_biolink_biomarker_axioms(anonymous_source, source)
 
 
 def test_bao_module_extraction_preserves_inverse_axiom_and_audit_counts(mod, tmp_path):

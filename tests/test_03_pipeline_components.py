@@ -100,7 +100,9 @@ def make_processed_tables(base: Path) -> None:
     )
 
 
-def test_processed_table_loader_builders_metadata_and_tbox(mod, tmp_path, monkeypatch):
+def test_synthetic_processed_table_components_metadata_and_tbox(
+    mod, tmp_path, monkeypatch
+):
     processed = tmp_path / "processed"
     processed.mkdir()
     make_processed_tables(processed)
@@ -120,7 +122,11 @@ def test_processed_table_loader_builders_metadata_and_tbox(mod, tmp_path, monkey
         ],
     )
     monkeypatch.setattr(mod, "CODE_NAMES_CSV", str(code_names))
-    monkeypatch.setattr(mod, "makaao_core_name", str(tmp_path / "makaao_core.csv"))
+    # This is deliberately a synthetic component fixture. The separate smoke
+    # test exercises the committed makaao_sample.csv input.
+    monkeypatch.setattr(
+        mod, "makaao_core_name", str(tmp_path / "synthetic_core_fixture.csv")
+    )
     monkeypatch.setattr(mod, "OUTPUT_OWL_ENRICHED", str(tmp_path / "makaao_kg_test.rdf"))
 
     data = mod.load_processed_tables(str(processed))
@@ -135,7 +141,7 @@ def test_processed_table_loader_builders_metadata_and_tbox(mod, tmp_path, monkey
     ]
 
     graph = mod.init_graph()
-    mod.build_core(
+    positivity_instances_by_hpo = mod.build_core(
         graph,
         data,
         {"P12345": "Protein X"},
@@ -150,6 +156,18 @@ def test_processed_table_loader_builders_metadata_and_tbox(mod, tmp_path, monkey
         {"CHEBI:23367": "http://purl.obolibrary.org/obo/CHEBI_23367"},
     )
 
+    aab_instance = mod.MAKAAO["aab_1_instance"]
+    positivity_class = mod.MAKAAO["positivity_1"]
+    positivity_instance = mod.MAKAAO["positivity_1_instance"]
+    hpo_class = URIRef("http://purl.obolibrary.org/obo/HP_0000001")
+    assert positivity_instances_by_hpo["HP:0000001"] == (positivity_instance,)
+    assert (positivity_instance, RDF.type, positivity_class) in graph
+    assert (positivity_instance, RDF.type, hpo_class) not in graph
+    assert (positivity_class, SKOS.closeMatch, hpo_class) in graph
+    assert (hpo_class, SKOS.closeMatch, positivity_class) in graph
+    assert (aab_instance, mod.BIOLINK.biomarker_for, positivity_instance) in graph
+    assert (positivity_instance, mod.BIOLINK.has_biomarker, aab_instance) in graph
+
     ordo = URIRef("http://www.orpha.net/ORDO/Orphanet_123")
     orpha_links = {
         str(ordo): [
@@ -162,9 +180,17 @@ def test_processed_table_loader_builders_metadata_and_tbox(mod, tmp_path, monkey
         graph,
         data,
         orpha_links,
+        positivity_instances_by_hpo,
         {"C0000009": "Disease CUI"},
         {"C0000009": "https://uts.nlm.nih.gov/uts/umls/concept/C0000009"},
         {"HP:0000001": "All"},
+    )
+
+    orpha_instance = mod.MAKAAO["orpha_123_instance"]
+    assert (orpha_instance, mod.SIO["SIO_001279"], positivity_instance) in graph
+    assert (positivity_instance, mod.SIO["SIO_001280"], orpha_instance) in graph
+    assert not list(
+        graph.triples((mod.MAKAAO["hpo_HP_0000001_instance"], None, None))
     )
 
     loinc_index = tmp_path / "index_loinc.csv"
@@ -179,18 +205,19 @@ def test_processed_table_loader_builders_metadata_and_tbox(mod, tmp_path, monkey
     )
     part_tests = tmp_path / "part_tests.json"
     part_tests.write_text(json.dumps({"LP100-1": ["1234-5", "1234-5"]}), encoding="utf-8")
-    labels = tmp_path / "labels.json"
-    labels.write_text(
-        json.dumps({"parts": {"LP100-1": "Protein X antibody"}, "tests": {"1234-5": "Protein X test"}}),
-        encoding="utf-8",
-    )
     mod.process_loinc_mappings(
         graph,
         str(loinc_index),
         data["indices"],
+        {"LP100-1": "Protein X antibody"},
+        {"1234-5": "Protein X test"},
         part_test_json=str(part_tests),
-        labels_json=str(labels),
     )
+    assert (
+        mod.MAKAAO["loinc_1234-5_instance"],
+        mod.LOINC_COMPONENT,
+        mod.MAKAAO["loinc_LP100-1_instance"],
+    ) in graph
 
     added = mod.add_orpha_umls_close_matches(
         graph,
@@ -199,17 +226,22 @@ def test_processed_table_loader_builders_metadata_and_tbox(mod, tmp_path, monkey
         orpha_names={"123": "Disease Z"},
     )
     assert added == 2
-    collision_rows = mod.add_label_collision_close_matches(graph)
-    assert any(
-        frozenset((row["class_1_kind"], row["class_2_kind"]))
-        == frozenset(("ordo_disease", "umls_cui"))
-        for row in collision_rows
-    )
+    cui_disease_class = mod.MAKAAO["CUI_C0000009"]
+    assert (ordo, SKOS.closeMatch, cui_disease_class) in graph
+    assert (cui_disease_class, SKOS.closeMatch, ordo) in graph
+    # The label-collision audit may report additional equal-label candidates,
+    # but it must not remove the explicit ORPHA/UMLS enrichment mapping.
+    mod.add_label_collision_close_matches(graph)
+    assert (ordo, SKOS.closeMatch, cui_disease_class) in graph
+    assert (cui_disease_class, SKOS.closeMatch, ordo) in graph
 
     mod.append_fair_metadata(graph)
+    distribution = mod.set_output_file_metadata(
+        graph, Path(mod.OUTPUT_OWL_ENRICHED).name
+    )
     dataset = URIRef("http://makaao.inria.fr/kg/")
     distributions = list(graph.objects(dataset, mod.DCAT.distribution))
-    assert len(distributions) == 1
+    assert distributions == [distribution]
     assert list(graph.objects(dataset, mod.VOID.triples))[0].toPython() == len(graph)
 
     # Add a blank-node restriction to a local class to exercise recursive TBox copying.

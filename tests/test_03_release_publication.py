@@ -85,7 +85,7 @@ def test_root_catalog_manifest_and_checksums_bind_staged_release(mod, tmp_path):
     sums = (reasoning / "SHA256SUMS").read_text(encoding="utf-8")
     assert "../makaao.rdf" in sums
     assert "../makaao.owl" in sums
-    assert "../catalog-v001.xml" in sums
+    assert f"../{catalog.name}" in sums
 
     bad_result = {"status": "FAILED", "modules": records}
     with pytest.raises(RuntimeError, match="did not complete"):
