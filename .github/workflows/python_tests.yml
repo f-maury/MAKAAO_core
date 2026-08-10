@@ -37,7 +37,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install \
             pytest pytest-cov \
-            pandas 'rdflib>=7.5,<8' openpyxl requests
+            pandas 'rdflib>=7.5,<8' openpyxl requests \
+            'pyshacl==0.40.1'
 
       - name: Verify committed sample fixture
         run: |
