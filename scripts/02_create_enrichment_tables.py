@@ -41,7 +41,8 @@ DATA_DIR = str(PROJECT_DIR / "data")
 IN_PATH = "/mnt/d/umls-2024AB-full_metamor/2024AB-full/2024AB/2024AB/META/MRCONSO.RRF"
 XML_PATH = os.path.join(DATA_DIR, "en_product4.xml")
 ENRICH_DIR = os.path.join(DATA_DIR, "enrichment_tables")
-INPUT_CSV_CORE = os.path.join(DATA_DIR, "makaao_core.csv")
+#INPUT_CSV_CORE = os.path.join(DATA_DIR, "makaao_core.csv")
+INPUT_CSV_CORE = os.path.join(DATA_DIR, "makaao_sample.csv")
 LOINC_PART_LINK_CSV = os.path.join(DATA_DIR, "LoincPartLink_Primary.csv")
 
 # Any English, unsuppressed MRCONSO atom may provide a label for a UMLS CUI.
@@ -64,7 +65,6 @@ OUT_ORPHA_LINKS = os.path.join(ENRICH_DIR, "orphanet_hpo_links.csv")
 OUT_ORPHA_UMLS_MAPPINGS = os.path.join(ENRICH_DIR, "orpha_umls_mappings.json")
 OUTPUT_CSV_FINAL = os.path.join(ENRICH_DIR, "code_names.csv")
 OUT_LOINC_PART_TESTS = os.path.join(ENRICH_DIR, "loinc_part_test_dict.json")
-OUT_LOINC_LABELS = os.path.join(ENRICH_DIR, "loinc_labels.json")
 REPORT_PATH = os.path.join(ENRICH_DIR, "enrichment_report.md")
 
 # API URLs
@@ -77,6 +77,8 @@ HEADERS = {"Accept": "application/json"}
 
 # Global storage for in-memory mapping and tracking
 umls_names_map = {}
+# Distinct English, unsuppressed MRCONSO labels other than the selected preferred name.
+umls_synonyms_map = {}
 # Metadata for the chosen UMLS name per CUI (e.g., SAB, preferred vs synonym)
 umls_name_meta = {}
 # Direct HPO-ID -> HPO label extracted from MRCONSO (SAB=HPO)
@@ -110,7 +112,6 @@ while True:
 def process_mrconso(
     input_cuis: set[str],
     input_orphas: set[str],
-    input_chebi_ids: set[str],
     required_hpo_ids: set[str],
     required_loinc_parts: set[str],
     required_loinc_terms: set[str],
@@ -131,9 +132,9 @@ def process_mrconso(
     #   4) shorter label
     #   5) stable lexical/source fields for reproducibility
     best: dict[str, tuple] = {}
+    umls_labels_by_cui: dict[str, dict[str, str]] = defaultdict(dict)
     best_hpo: dict[str, tuple] = {}
     best_orpha: dict[str, tuple] = {}
-    best_chebi: dict[str, tuple] = {}
     best_loinc_parts: dict[str, tuple] = {}
     best_loinc_terms: dict[str, tuple] = {}
 
@@ -176,6 +177,10 @@ def process_mrconso(
 
             if cui and cui in input_cuis:
                 relevant_label_rows += 1
+                normalized_label = label.casefold()
+                current_label = umls_labels_by_cui[cui].get(normalized_label)
+                if current_label is None or label < current_label:
+                    umls_labels_by_cui[cui][normalized_label] = label
                 cand = (
                     0 if ispref == "Y" else 1,
                     TTY_PRIORITY.get(tty, DEFAULT_TTY_RANK),
@@ -207,21 +212,6 @@ def process_mrconso(
                     if current is None or local_cand < current:
                         best_orpha[orpha_id] = local_cand
 
-            if sab.upper() == "CHEBI":
-                chebi_id = norm_chebi(code) or norm_chebi(scui) or norm_chebi(sdui)
-                if chebi_id and chebi_id in input_chebi_ids:
-                    local_cand = (
-                        0 if ispref == "Y" else 1,
-                        TTY_PRIORITY.get(tty, DEFAULT_TTY_RANK),
-                        0 if ts == "P" else 1,
-                        len(label),
-                        label.casefold(),
-                        label,
-                        code,
-                    )
-                    current = best_chebi.get(chebi_id)
-                    if current is None or local_cand < current:
-                        best_chebi[chebi_id] = local_cand
 
             if sab == "HPO":
                 hpo_id = norm_hpo(code)
@@ -271,13 +261,20 @@ def process_mrconso(
             "ispref": cand[0] == 0,
             "ts_preferred": cand[2] == 0,
         }
+        preferred_norm = re.sub(r"\s+", " ", label).strip().casefold()
+        umls_synonyms_map[cui] = sorted(
+            (
+                value
+                for normalized, value in umls_labels_by_cui.get(cui, {}).items()
+                if normalized != preferred_norm
+            ),
+            key=lambda value: (value.casefold(), value),
+        )
 
     for hpo_id, cand in best_hpo.items():
         hpo_names_map[hpo_id] = cand[5]
     for orpha_id, cand in best_orpha.items():
         orpha_names_map[orpha_id] = cand[5]
-    for chebi_id, cand in best_chebi.items():
-        chebi_names_map[chebi_id] = cand[5]
     for loinc_code, cand in best_loinc_parts.items():
         loinc_part_names_map[loinc_code] = cand[5]
     for loinc_code, cand in best_loinc_terms.items():
@@ -320,7 +317,6 @@ def process_mrconso(
         "Part 1: Loaded local labels for "
         f"ORPHA MRCONSO {len(orpha_names_map)}/{len(input_orphas)}; "
         f"Orphanet XML {len(orpha_xml_names_map)}/{len(input_orphas)}; "
-        f"ChEBI {len(chebi_names_map)}/{len(input_chebi_ids)}."
     )
     print(
         "Part 1: UMLS label selection accepts every MRCONSO source "
@@ -449,7 +445,7 @@ def process_orphanet(input_orphas: set[str]) -> set[str]:
         raise RuntimeError(f"Failed to process Orphanet XML {XML_PATH}") from exc
 
 
-# --- PART 3: ENRICHMENT USING APIS FOR WHA WAS NOT IN MRCONSO -----
+# --- PART 3: ENRICHMENT USING APIS FOR WHAT WAS NOT FOUND IN MRCONSO -----
 def req_get(url: str, params: Optional[dict] = None) -> Optional[requests.Response]:
     for i in range(3):
         try:
@@ -823,25 +819,14 @@ def write_loinc_enrichment_files(
     input_terms: set[str],
     label_stats: dict[str, int],
 ) -> tuple[list[str], list[str]]:
-    """Write the two deterministic JSON files consumed by script 03."""
+    """Write the deterministic LOINC Part-to-Term JSON consumed by script 03."""
     missing_parts = sorted(
         code for code in input_parts if not loinc_part_names_map.get(code)
     )
     missing_terms = sorted(
         code for code in input_terms if not loinc_term_names_map.get(code)
     )
-    labels = {
-        "parts": {
-            code: loinc_part_names_map.get(code, "")
-            for code in sorted(input_parts, key=lambda value: (value.casefold(), value))
-        },
-        "tests": {
-            code: loinc_term_names_map.get(code, "")
-            for code in sorted(input_terms, key=lambda value: (value.casefold(), value))
-        },
-    }
     atomic_write_json(OUT_LOINC_PART_TESTS, part_tests)
-    atomic_write_json(OUT_LOINC_LABELS, labels)
     print(
         f"LOINC enrichment: wrote {len(part_tests)} Parts and {len(input_terms)} linked Terms "
         f"to {OUT_LOINC_PART_TESTS}."
@@ -854,7 +839,7 @@ def write_loinc_enrichment_files(
         f"MRCONSO Terms {label_stats['mrconso_terms']}/{label_stats['total_terms']}, "
         f"Part-link CSV fallback {label_stats['term_link_fallbacks']}; "
         f"unresolved Parts {len(missing_parts)}, Terms {len(missing_terms)}; "
-        f"output={OUT_LOINC_LABELS}."
+        f"labels will be written to {OUTPUT_CSV_FINAL}."
     )
     return missing_parts, missing_terms
 
@@ -986,7 +971,6 @@ def write_report(
     output_orpha_links: str,
     output_orpha_umls_mappings: str,
     output_loinc_part_tests: str,
-    output_loinc_labels: str,
     missing_loinc_part_labels: list[str],
     missing_loinc_term_labels: list[str],
     loinc_label_stats: dict[str, int],
@@ -1008,7 +992,6 @@ def write_report(
     lines.append(f"- LOINC Part links: `{LOINC_PART_LINK_CSV}`")
     lines.append(f"- Output (code names): `{output_csv}`")
     lines.append(f"- Output (LOINC Part→Term dictionary): `{output_loinc_part_tests}`")
-    lines.append(f"- Output (LOINC labels): `{output_loinc_labels}`")
     lines.append("")
     lines.append("## LOINC dictionary generation")
     lines.append("")
@@ -1098,6 +1081,7 @@ def write_report(
 
 
 def enrich_data(
+    input_loinc_terms: set[str],
     missing_loinc_part_labels: list[str],
     missing_loinc_term_labels: list[str],
     loinc_label_stats: dict[str, int],
@@ -1176,7 +1160,17 @@ def enrich_data(
             results_tracker["UMLS"]["fail"] += 1
             failed_ids["UMLS"].append(c)
             print(f"[UNSUCCESSFUL] UMLS ID: {c} - No English, unsuppressed label found in MRCONSO.")
-        out_rows.append({"source": "UMLS", "id": c, "name": name or "", "url": f"https://uts.nlm.nih.gov/uts/umls/concept/{c}"})
+        out_rows.append({
+            "source": "UMLS",
+            "id": c,
+            "name": name or "",
+            "synonyms_en": json.dumps(
+                umls_synonyms_map.get(c, []),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            "url": f"https://uts.nlm.nih.gov/uts/umls/concept/{c}",
+        })
 
     # HPO local lookup (from MRCONSO HPO entries)
     print(f"Resolving {len(hpo_ids)} HPO IDs (local memory)...")
@@ -1287,8 +1281,8 @@ def enrich_data(
     else:
         print("No API fallback was required.")
 
-    # LOINC Part labels use the same final local-first values written to
-    # loinc_labels.json, so code_names.csv and the KG input cannot disagree.
+    # code_names.csv is the authoritative label table for both LOINC Parts
+    # and linked LOINC Terms.
     for lid in sorted(loinc_map, key=lambda value: (value.casefold(), value)):
         name = loinc_part_names_map.get(lid)
         if name:
@@ -1297,8 +1291,28 @@ def enrich_data(
             results_tracker["LOINC"]["fail"] += 1
             failed_ids["LOINC"].append(lid)
             print(
-                f"[UNSUCCESSFUL] LOINC ID: {lid} - No label found in "
+                f"[UNSUCCESSFUL] LOINC Part ID: {lid} - No label found in "
                 "MRCONSO, LoincPartLink_Primary.csv, or the core CSV."
+            )
+        out_rows.append(
+            {
+                "source": "LOINC",
+                "id": lid,
+                "name": name or "",
+                "url": f"https://loinc.org/{lid}",
+            }
+        )
+
+    for lid in sorted(input_loinc_terms, key=lambda value: (value.casefold(), value)):
+        name = loinc_term_names_map.get(lid)
+        if name:
+            results_tracker["LOINC"]["success"] += 1
+        else:
+            results_tracker["LOINC"]["fail"] += 1
+            failed_ids["LOINC"].append(lid)
+            print(
+                f"[UNSUCCESSFUL] LOINC Term ID: {lid} - No label found in "
+                "MRCONSO or LoincPartLink_Primary.csv."
             )
         out_rows.append(
             {
@@ -1325,7 +1339,11 @@ def enrich_data(
     temporary = OUTPUT_CSV_FINAL + ".tmp"
     try:
         with open(temporary, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=["source", "id", "name", "url"], lineterminator="\n")
+            writer = csv.DictWriter(
+                f,
+                fieldnames=["source", "id", "name", "synonyms_en", "url"],
+                lineterminator="\n",
+            )
             writer.writeheader()
             writer.writerows(out_rows)
         os.replace(temporary, OUTPUT_CSV_FINAL)
@@ -1356,7 +1374,6 @@ def enrich_data(
         output_orpha_links=OUT_ORPHA_LINKS,
         output_orpha_umls_mappings=OUT_ORPHA_UMLS_MAPPINGS,
         output_loinc_part_tests=OUT_LOINC_PART_TESTS,
-        output_loinc_labels=OUT_LOINC_LABELS,
         missing_loinc_part_labels=missing_loinc_part_labels,
         missing_loinc_term_labels=missing_loinc_term_labels,
         loinc_label_stats=loinc_label_stats,
@@ -1381,6 +1398,7 @@ def enrich_data(
 
 def reset_global_state() -> None:
     umls_names_map.clear()
+    umls_synonyms_map.clear()
     umls_name_meta.clear()
     hpo_names_map.clear()
     orpha_names_map.clear()
@@ -1411,7 +1429,6 @@ def main():
     validate_required_inputs()
 
     input_cuis, input_orphas = collect_core_orpha_umls_identifiers()
-    input_chebi_ids = collect_core_chebi_identifiers()
     input_loinc_parts, core_loinc_part_labels = collect_core_loinc_parts_and_labels()
     (
         loinc_part_tests,
@@ -1438,7 +1455,6 @@ def main():
     process_mrconso(
         input_cuis,
         input_orphas,
-        input_chebi_ids,
         orphanet_hpo_ids | core_hpo_ids,
         input_loinc_parts,
         input_loinc_terms,
@@ -1459,6 +1475,7 @@ def main():
         )
     )
     enrich_data(
+        input_loinc_terms,
         missing_loinc_part_labels,
         missing_loinc_term_labels,
         loinc_label_stats,
