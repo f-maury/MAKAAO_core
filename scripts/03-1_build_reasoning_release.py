@@ -40,7 +40,7 @@ from rdflib import BNode, Graph, Literal, Namespace, RDF, RDFS, OWL, URIRef
 from rdflib.namespace import DCTERMS, SKOS, XSD
 
 
-SCRIPT_VERSION = "1.2.28"
+SCRIPT_VERSION = "1.2.29"
 SCRIPT_ITERATION = "2026-08-05-add-ordo-umls-exact-label-matches"
 
 PROV = Namespace("http://www.w3.org/ns/prov#")
@@ -59,7 +59,7 @@ ODRL = Namespace("http://www.w3.org/ns/odrl/2/")
 
 MODULE_BASE = "http://makaao.inria.fr/imports/"
 
-
+#small class to gather info about extracte dontology modules
 @dataclass(frozen=True)
 class VocabularySpec:
     name: str
@@ -68,7 +68,7 @@ class VocabularySpec:
     filename: str
     source_key: str
 
-
+# initiallize modules from external ontologies
 VOCABULARIES = (
     VocabularySpec(
         "biolink",
@@ -138,6 +138,7 @@ VOCABULARIES = (
 SKOS_NOTATION = URIRef(str(SKOS) + "notation")
 SKOS_PREF_LABEL = URIRef(str(SKOS) + "prefLabel")
 
+# lists reasoning predicates here
 LOGICAL_PREDICATES = {
     RDF.type,
     RDFS.subClassOf,
@@ -187,9 +188,7 @@ OBJECT_PROPERTY_CHARACTERISTICS = {
 
 # These characteristics are legal only for object properties. FunctionalProperty
 # is deliberately excluded because it is shared by object and datatype
-# properties. Structural recognition is required for sources such as the pinned
-# Biolink OWL export, where an object-hierarchy property may also carry an
-# erroneous owl:DatatypeProperty declaration but is typed owl:SymmetricProperty.
+# properties.
 OBJECT_ONLY_PROPERTY_CHARACTERISTICS = {
     OWL.SymmetricProperty,
     OWL.TransitiveProperty,
@@ -229,7 +228,7 @@ METADATA_NAMESPACES = (
     str(ODRL),
 )
 
-
+# class to gather elements extraced from external ontologies
 @dataclass(frozen=True)
 class ModuleResult:
     name: str
@@ -256,7 +255,7 @@ class ModuleResult:
     resolved_annotation_logical_overlap_iris: tuple[str, ...]
     retained_axiom_counts: dict[str, int]
 
-
+# generate signature for a file
 def file_sha256(path: str | Path) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as stream:
@@ -274,7 +273,7 @@ def portable_source_path(path: str | Path) -> str:
         return str(Path("data", *parts[index:]))
     return resolved.name
 
-
+# read rdf source
 def parse_graph(path: str | Path) -> Graph:
     path = str(path)
     if not os.path.isfile(path):
@@ -309,7 +308,7 @@ def collect_signature(graph: Graph, prefixes: Sequence[str]) -> tuple[set[URIRef
             predicates.add(predicate)
     return terms, predicates
 
-
+# collect entities of each type in the graph (that have an URI, blank nodes not included)
 def source_entity_sets(source: Graph) -> dict[str, set[URIRef]]:
     """Collect declared and structurally implied named entity categories.
 
@@ -382,9 +381,7 @@ def source_entity_sets(source: Graph) -> dict[str, set[URIRef]]:
         if isinstance(node, URIRef)
     )
 
-    # Domains are class expressions for both object and datatype properties.
-    # A datatype-valued domain is retained as contradictory evidence and is
-    # rejected later if the property enters the selected module.
+    # check properties' domain are not DataType
     for target in source.objects(None, RDFS.domain):
         if (
             isinstance(target, URIRef)
@@ -401,7 +398,7 @@ def source_entity_sets(source: Graph) -> dict[str, set[URIRef]]:
         if isinstance(prop, URIRef) and isinstance(target, URIRef)
     ]
 
-    # First use declarations already present on the range target.
+    # collect dataProperties and objectProperties
     for prop, target in range_pairs:
         if is_builtin_datatype_iri(target) or target in datatypes:
             range_datatype_properties.add(prop)
@@ -545,6 +542,7 @@ def source_entity_sets(source: Graph) -> dict[str, set[URIRef]]:
         "named_individuals": named_individuals,
     }
 
+# check how a predicate is used, with which values
 def predicate_usage_kind(graph: Graph, predicate: URIRef) -> str | None:
     objects = list(graph.objects(None, predicate))
     if not objects:
@@ -557,7 +555,7 @@ def predicate_usage_kind(graph: Graph, predicate: URIRef) -> str | None:
         return "literal"
     return "resource"
 
-
+# check a a property attributed is not conflicting with external source ontology
 def assert_source_property_category_compatible(
     *,
     spec: VocabularySpec,
@@ -572,7 +570,7 @@ def assert_source_property_category_compatible(
     """Prevent hierarchy closure from silently changing source semantics."""
     if (
         spec.name == "skos"
-        and predicate in {SKOS_NOTATION, SKOS_PREF_LABEL}
+        and predicate in {SKOS_NOTATION, SKOS_PREF_LABEL} # exception for skos properties
         and desired_category == "annotation"
     ):
         return
@@ -587,6 +585,8 @@ def assert_source_property_category_compatible(
     # that overlap. For the strict projection, corresponding logical evidence
     # takes precedence over the annotation declaration; the conflicting
     # annotation declaration is omitted and recorded in the module audit.
+
+    # arbitration for properties with conflicting types
     if desired_category == "object":
         if is_datatype and not is_object:
             raise RuntimeError(
@@ -623,7 +623,7 @@ def assert_source_property_category_compatible(
     else:  # pragma: no cover - internal programming error
         raise ValueError(f"Unknown property category: {desired_category}")
 
-
+# add metadata to each extracted module
 def add_module_header(
     module: Graph,
     spec: VocabularySpec,
@@ -650,7 +650,7 @@ def add_module_header(
     )
     module.add((spec.module_iri, DCTERMS.identifier, Literal(f"sha256:{source_hash}")))
 
-
+# collect the parents and equivalent classes of selected classes
 def expand_class_closure(
     source: Graph,
     selected: set[URIRef],
@@ -678,7 +678,7 @@ def expand_class_closure(
                 selected.add(left)
         changed = len(selected) != previous
 
-
+# since it seems there are several versions of skos ontology, check the one we have have the right URI
 def validate_skos_source_identity(source: Graph, source_path: str | Path) -> None:
     """Require the configured SKOS file to identify the W3C SKOS ontology."""
     ontology_iris = {
@@ -693,7 +693,8 @@ def validate_skos_source_identity(source: Graph, source_path: str | Path) -> Non
             f"ontology IRI {SKOS_ONTOLOGY_IRI}; declared ontology IRIs: {declared}"
         )
 
-
+# biolink seems to cause some problems becuase it is not a proper ontology, but rather a high-leval conceptual schema, that was automatically converted to .ttl in the bioportal
+# we do some additional cehcks to make sure imports from biolink make no issues
 def validate_biolink_biomarker_axioms(source: Graph, module: Graph) -> None:
     """Verify critical Biolink biomarker axioms survive strict extraction.
 
@@ -757,7 +758,7 @@ def validate_biolink_biomarker_axioms(source: Graph, module: Graph) -> None:
             "missing or not preserved:\n  " + "\n  ".join(errors)
         )
 
-
+# check bao properties are correctly defined
 def validate_bao_target_properties(source: Graph, module: Graph) -> None:
     """Require the pinned BAO source to define both target predicates logically."""
     errors: list[str] = []
@@ -774,7 +775,7 @@ def validate_bao_target_properties(source: Graph, module: Graph) -> None:
             "or not classified as object properties:\n  " + "\n  ".join(errors)
         )
 
-
+# big function to build reasoning module using external ontology + KG in which we use some elements of taht ontology
 def build_reasoning_module(
     spec: VocabularySpec,
     source_path: str,
@@ -1436,7 +1437,7 @@ def build_reasoning_module(
     source.close()
     return result
 
-
+# create an XML catalog file mapping IRIs to each corresponding module file
 def write_catalog(path: Path, results: Iterable[ModuleResult]) -> None:
     """Write and verify the reasoning-local XML catalog."""
     result_list = list(results)
@@ -1486,7 +1487,7 @@ def write_catalog(path: Path, results: Iterable[ModuleResult]) -> None:
         if not resolved.is_file() or resolved.stat().st_size == 0:
             raise RuntimeError(f"Reasoning catalog target is missing or empty: {resolved}")
 
-
+# verify that graph tbox indeed imports the list of selected vocabularies
 def validate_expected_imports(tbox_graph: Graph) -> dict[str, list[str]]:
     """Require the standalone TBox imports to match the generated module set."""
     expected = {spec.module_iri for spec in VOCABULARIES}
@@ -1529,11 +1530,11 @@ def validate_expected_imports(tbox_graph: Graph) -> dict[str, list[str]]:
         "actual": sorted(map(str, actual)),
     }
 
-
+# detect ontology header
 def ontology_subjects(graph: Graph) -> set[URIRef | BNode]:
     return set(graph.subjects(RDF.type, OWL.Ontology))
 
-
+#select KG without imports, and without headers
 def copy_without_headers_and_imports(source: Graph, destination: Graph) -> None:
     headers = ontology_subjects(source)
     for subject, predicate, obj in source:
@@ -1541,7 +1542,7 @@ def copy_without_headers_and_imports(source: Graph, destination: Graph) -> None:
             continue
         destination.add((subject, predicate, obj))
 
-
+# take a KG, prepare it for reasoning by adding missing type declaration
 def add_reasoning_metadata_declarations(graph: Graph) -> None:
     # Any URI used as an rdf:type object is a class in the RDF graph. Add the
     # missing declarations needed for the OWL 2 DL parser, except for OWL/RDF
@@ -1645,7 +1646,8 @@ def add_reasoning_metadata_declarations(graph: Graph) -> None:
     graph.remove((SKOS_NOTATION, RDFS.range, None))
     graph.add((SKOS_NOTATION, RDF.type, OWL.AnnotationProperty))
 
-
+# we have reified relation in base KG (in addition to their non-reified equivalents)
+# this function removed reified relations, for the reasoning-ready version of the KG
 def remove_generic_reification(graph: Graph) -> Graph:
     """Remove RDF/MAKAAO reification record instances, retaining schema classes."""
     reification_predicates = {RDF.subject, RDF.predicate, RDF.object}
@@ -1666,6 +1668,7 @@ def remove_generic_reification(graph: Graph) -> Graph:
         output.add((subject, predicate, obj))
     return output
 
+# check that a KG has no reified relations, and no import statement (this is supposed to be the state of the reasoning-ready version of KG)
 def graph_postconditions(graph: Graph, *, require_no_imports: bool) -> dict[str, int]:
     """Check structural conditions promised for retained reasoning artifacts."""
     reification_predicates = {RDF.subject, RDF.predicate, RDF.object}
@@ -1698,6 +1701,7 @@ def graph_postconditions(graph: Graph, *, require_no_imports: bool) -> dict[str,
         "owl_imports": imports,
     }
 
+# export graph to rdf/xml format
 def serialize_verified(graph: Graph, path: Path) -> Graph:
     path.parent.mkdir(parents=True, exist_ok=True)
     graph.serialize(destination=str(path), format="xml")
@@ -1711,7 +1715,7 @@ def serialize_verified(graph: Graph, path: Path) -> Graph:
         verified.close()
         raise
 
-
+# command to run the ROBOT tool, with max allowed runtime, and logging
 def run_command_tail(
     command: Sequence[str],
     *,
@@ -1794,7 +1798,7 @@ def run_command_tail(
         )
     return return_code, tail_text
 
-
+# launch ROBOT command to check an ontology complies with OWL 2 DL profile (strict mode)
 def validate_profile(
     robot_command: Sequence[str],
     ontology_path: Path,
@@ -1828,7 +1832,7 @@ def validate_profile(
     if not report_path.is_file():
         raise RuntimeError(f"ROBOT did not create profile report {report_path}")
 
-
+# ROBOT command to run HermiT OWL reasoner on an ontology
 def run_reasoner(
     robot_command: Sequence[str],
     ontology_path: Path,
@@ -1863,7 +1867,7 @@ def run_reasoner(
         raise RuntimeError(f"Reasoner did not create output {output_path}")
 
 
-
+# check reasoner KG has original KG triples + inferred KG
 def preserve_asserted_axioms(
     asserted_path: Path,
     reasoned_path: Path,
@@ -1930,6 +1934,7 @@ def preserve_asserted_axioms(
         if verified is not None:
             verified.close()
 
+# check reasoned graph : must have no reified relations, no imports
 def check_reasoned_output(path: Path) -> dict[str, Any]:
     graph = Graph()
     graph.parse(str(path), format="xml")
@@ -1958,7 +1963,7 @@ def check_reasoned_output(path: Path) -> dict[str, Any]:
     graph.close()
     return result
 
-
+# function to write report explaining how modules were generated
 def extraction_policy() -> dict[str, Any]:
     """Machine-readable definition of the strict module extraction policy."""
     return {
@@ -2005,7 +2010,7 @@ def extraction_policy() -> dict[str, Any]:
         "formal_module_type": "deterministic at the selected RDF-graph level, signature-driven syntactic module; not a formal locality module or canonical byte serialization",
     }
 
-
+# functoin to write sumup of how modules were generated
 def write_extraction_documentation(output_root: Path) -> None:
     policy = extraction_policy()
     lines = [
@@ -2046,7 +2051,9 @@ def write_extraction_documentation(output_root: Path) -> None:
     ])
     (output_root / "EXTRACTION_POLICY.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-
+# big function that: creates reasoning folders, extracts reasoning modules and writes them to folder, write extraction reports, check ROBOT is presnet,
+# combines input KG Tbox with extracted resoning modules, merged that extended tbox with input KG deprived of reification, performs ROBOT checking in a temp folder
+# (OWL2 DL strict validation + HermiT reasoning), writes reasoned KG, check resoned KG, writes documentation and reports
 def build_reasoning_release(
     *,
     kg_graph: Graph,
@@ -2344,7 +2351,7 @@ def build_reasoning_release(
 
     return manifest
 
-
+# main functino
 def main() -> None:
     raise SystemExit(
         "This is an internal helper. Run 03_build_kg_from_tables.py; it stages the "
