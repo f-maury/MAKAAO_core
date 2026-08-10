@@ -34,11 +34,12 @@ from rdflib import BNode, Graph, Literal, Namespace, OWL, RDF, RDFS, URIRef
 from rdflib.namespace import SKOS
 
 
-SCRIPT_VERSION = "2.0.8"
+SCRIPT_VERSION = "2.0.10"
 
 # ----------------------------- Namespaces -----------------------------
 MAKAAO = Namespace("http://makaao.inria.fr/kg/")
 MAKAAO_LOINC = Namespace("http://makaao.inria.fr/loinc/")
+LOINC_PROPERTY = Namespace("http://loinc.org/property/")
 OBO = Namespace("http://purl.obolibrary.org/obo/")
 UNIPROT_CORE = Namespace("http://purl.uniprot.org/core/")
 SIO = Namespace("http://semanticscience.org/resource/")
@@ -48,11 +49,9 @@ PROV = Namespace("http://www.w3.org/ns/prov#")
 ORDO = Namespace("http://www.orpha.net/ORDO/")
 UMLS = Namespace("http://uts.nlm.nih.gov/uts/umls/concept/")
 
-CHEBI_MOLECULAR_ENTITY = OBO["CHEBI_23367"]
-UNIPROT_PROTEIN = UNIPROT_CORE["Protein"]
-ORDO_DISEASE_ROOT = ORDO["Orphanet_C001"]
+LOINC_COMPONENT = LOINC_PROPERTY["COMPONENT"]
 
-EXCLUDED_CLASSES = {MAKAAO.Document, MAKAAO.Relation}
+EXCLUDED_CLASSES = {MAKAAO.Document, MAKAAO.Relation} # exclude reified relations
 GENERIC_INSTANCE_TYPES = {
     RDF.Statement,
     OWL.NamedIndividual,
@@ -61,7 +60,6 @@ GENERIC_INSTANCE_TYPES = {
     MAKAAO.Relation,
     MAKAAO.Target,
     MAKAAO.AutoimmuneDisease,
-    MAKAAO.AutoantibodyPositivity,
     MAKAAO.CUI,
 }
 
@@ -72,14 +70,16 @@ RELATION_PREDICATES = {
     SIO["SIO_001279"],       # has phenotype
     SIO["SIO_001280"],       # is phenotype of
     BIOLINK.biomarker_for,
-    MAKAAO.hasLoincComponent,
+    BIOLINK.has_biomarker,
+    LOINC_COMPONENT,
     SKOS.closeMatch,
     BAO["BAO_0000598"],      # is target for
     BAO["BAO_0000211"],      # has target
 }
 
-# Inverses materialized in the lite graph to preserve bidirectional access.
-# Duplicate triples are automatically ignored.
+# Inverses retained or materialized in the lite graph to preserve bidirectional
+# access. Duplicate triples are automatically ignored when the canonical KG
+# already asserts both directions.
 INVERSE_PREDICATES = {
     BIOLINK.biomarker_for: BIOLINK.has_biomarker,
     BIOLINK.has_biomarker: BIOLINK.biomarker_for,
@@ -112,7 +112,7 @@ def find_project_dir(start: Path) -> Path:
         "expected a data/ directory."
     )
 
-
+# read some parameters from 03 graph building script
 def read_builder_kg_version(project_dir: Path, script_dir: Path) -> str | None:
     """Read KG_VERSION from the main builder without importing/executing it."""
     candidates = (
@@ -138,7 +138,7 @@ def read_builder_kg_version(project_dir: Path, script_dir: Path) -> str | None:
                 return value.value
     return None
 
-
+# detect original KG in the folder
 def discover_canonical_kg(kg_dir: Path) -> Path:
     """Select the only canonical makaao_kg_<version>.rdf file in kg/."""
     candidates = []
@@ -165,7 +165,7 @@ def discover_canonical_kg(kg_dir: Path) -> Path:
         + names
     )
 
-
+# set some paths for KG-related files
 def default_paths() -> tuple[Path, Path, Path | None]:
     script_dir = Path(__file__).resolve().parent
     project_dir = find_project_dir(script_dir)
@@ -193,14 +193,15 @@ def default_paths() -> tuple[Path, Path, Path | None]:
 
 
 # ----------------------------- RDF helpers -----------------------------
+# select URI part
 def tail(term: URIRef) -> str:
     return str(term).rsplit("/", 1)[-1]
 
-
+# detect entities from PORV-O ontology
 def is_prov_term(term) -> bool:
     return isinstance(term, URIRef) and str(term).startswith(str(PROV))
 
-
+# detect URI of entities to remove
 def is_instance_uri(term) -> bool:
     if not isinstance(term, URIRef):
         return False
@@ -216,7 +217,7 @@ def is_instance_uri(term) -> bool:
             return True
     return False
 
-
+# detect some classes
 def is_named_class_candidate(term) -> bool:
     return (
         isinstance(term, URIRef)
@@ -225,7 +226,7 @@ def is_named_class_candidate(term) -> bool:
         and term not in EXCLUDED_CLASSES
     )
 
-
+# more function to detect entities from different types
 def is_hpo_class(term: URIRef) -> bool:
     return str(term).startswith(str(OBO)) and tail(term).startswith("HP_")
 
@@ -250,7 +251,7 @@ def is_cui_class(term: URIRef) -> bool:
         or "/concept/C" in text
     )
 
-
+# alternative method to detect some types of entities
 def fallback_class_from_instance(node: URIRef) -> URIRef | None:
     """Fallback for older/current MAKAAO naming when rdf:type is incomplete."""
     slug = tail(node)
@@ -260,6 +261,8 @@ def fallback_class_from_instance(node: URIRef) -> URIRef | None:
 
     if stem == "aab_18":
         return MAKAAO.Autoantibody
+    if stem == "positivity_18":
+        return MAKAAO.AutoantibodyPositivity
     if stem.startswith("orpha_") and stem[len("orpha_") :].isdigit():
         return ORDO[f"Orphanet_{stem[len('orpha_'):]}"]
     if stem.startswith("hpo_HP_"):
@@ -270,7 +273,7 @@ def fallback_class_from_instance(node: URIRef) -> URIRef | None:
         return MAKAAO_LOINC[stem[len("loinc_") :]]
     return MAKAAO[stem]
 
-
+# build list of different types in KG
 def build_types_index(graph: Graph) -> dict[URIRef, set[URIRef]]:
     result: dict[URIRef, set[URIRef]] = defaultdict(set)
     for subject, obj in graph.subject_objects(RDF.type):
@@ -278,7 +281,7 @@ def build_types_index(graph: Graph) -> dict[URIRef, set[URIRef]]:
             result[subject].add(obj)
     return result
 
-
+# replace some insances connected by a relations, by corresponding classes, in the relation head and tail
 def choose_projection_class(
     node,
     types_by_node: dict[URIRef, set[URIRef]],
@@ -303,12 +306,37 @@ def choose_projection_class(
         }
     }
 
-    # Positivity individuals can have both a local positivity class and an HPO
-    # class. The historical simplifier deliberately preferred the HPO class.
+    # Positivity individuals project only to their local positivity class.
+    # HPO classes are mapping targets and must never replace that local class.
     if tail(node).startswith("positivity_"):
+        local_candidates = sorted(
+            (
+                candidate
+                for candidate in candidates
+                if candidate == MAKAAO.AutoantibodyPositivity
+                or (
+                    str(candidate).startswith(str(MAKAAO))
+                    and tail(candidate).startswith("positivity_")
+                )
+            ),
+            key=str,
+        )
+        if len(local_candidates) == 1:
+            return local_candidates[0]
+        if len(local_candidates) > 1:
+            fallback = fallback_class_from_instance(node)
+            if fallback in local_candidates:
+                return fallback
+            raise RuntimeError(
+                "Ambiguous local positivity classes for "
+                f"{node}: {', '.join(map(str, local_candidates))}"
+            )
         hpo_candidates = sorted((c for c in candidates if is_hpo_class(c)), key=str)
         if hpo_candidates:
-            return hpo_candidates[0]
+            raise RuntimeError(
+                f"Positivity individual {node} is typed only with external HPO "
+                "class(es); a local positivity class is required"
+            )
 
     if len(candidates) == 1:
         return next(iter(candidates))
@@ -325,21 +353,28 @@ def choose_projection_class(
         f"{node}: {', '.join(sorted(map(str, candidates)))}"
     )
 
-
-def copy_labels(source_graphs: Iterable[Graph], class_iri: URIRef, output: Graph) -> None:
+# apply lbels from instances to corresponding classes
+def copy_labels(
+    source_graphs: Iterable[Graph],
+    source_iri: URIRef,
+    output: Graph,
+    *,
+    target_iri: URIRef | None = None,
+) -> None:
+    destination = target_iri or source_iri
     for source in source_graphs:
         for predicate in (RDFS.label, SKOS.prefLabel):
-            for value in source.objects(class_iri, predicate):
+            for value in source.objects(source_iri, predicate):
                 if isinstance(value, Literal):
-                    output.add((class_iri, predicate, value))
+                    output.add((destination, predicate, value))
 
-
+# check if a class has label
 def has_label(graph: Graph, class_iri: URIRef) -> bool:
     return any(graph.objects(class_iri, RDFS.label)) or any(
         graph.objects(class_iri, SKOS.prefLabel)
     )
 
-
+# return all classes from a KG
 def all_class_nodes(graph: Graph) -> set[URIRef]:
     nodes: set[URIRef] = set()
     for subject, predicate, obj in graph:
@@ -359,6 +394,7 @@ def all_class_nodes(graph: Graph) -> set[URIRef]:
 
 
 # ----------------------------- Projection -----------------------------
+# collect classes in KG
 def collect_schema_classes(schema: Graph) -> set[URIRef]:
     classes = {
         subject
@@ -371,12 +407,13 @@ def collect_schema_classes(schema: Graph) -> set[URIRef]:
             classes.add(obj)
     return classes
 
-
+# big function to build lite KG from original KG, check result, and write reports
 def build_lite_graph(data: Graph, schema: Graph) -> tuple[Graph, dict]:
     output = Graph()
     for prefix, namespace in (
         ("mak", MAKAAO),
         ("mloinc", MAKAAO_LOINC),
+        ("loinc_property", LOINC_PROPERTY),
         ("rdfs", RDFS),
         ("owl", OWL),
         ("skos", SKOS),
@@ -443,7 +480,7 @@ def build_lite_graph(data: Graph, schema: Graph) -> tuple[Graph, dict]:
     for instance, class_iri in endpoint_projection.items():
         if has_label(output, class_iri):
             continue
-        copy_labels((data,), instance, output)
+        copy_labels((data,), instance, output, target_iri=class_iri)
 
     role_by_class: dict[URIRef, set[URIRef]] = defaultdict(set)
     for instance, class_iri in endpoint_projection.items():
@@ -455,7 +492,17 @@ def build_lite_graph(data: Graph, schema: Graph) -> tuple[Graph, dict]:
             }:
                 role_by_class[class_iri].add(rdf_type)
 
-    force_historical_constraints(output, role_by_class)
+    # A UMLS concept aligned to an ORDO class is disease evidence even when
+    # the enrichment-only CUI has no individual participating in a relation.
+    for left, right in data.subject_objects(SKOS.closeMatch):
+        if not isinstance(left, URIRef) or not isinstance(right, URIRef):
+            continue
+        if is_cui_class(left) and is_ordo_class(right):
+            role_by_class[left].add(MAKAAO.AutoimmuneDisease)
+        elif is_ordo_class(left) and is_cui_class(right):
+            role_by_class[right].add(MAKAAO.AutoimmuneDisease)
+
+    add_application_role_hierarchy(output, role_by_class)
     purge_excluded_resources(output)
     ensure_every_endpoint_is_a_class(output)
 
@@ -478,67 +525,47 @@ def build_lite_graph(data: Graph, schema: Graph) -> tuple[Graph, dict]:
     }
     return output, report
 
-
-def force_historical_constraints(
+# add makaao classes hierarchy
+def add_application_role_hierarchy(
     output: Graph,
     role_by_class: dict[URIRef, set[URIRef]],
 ) -> None:
-    """Preserve the hierarchy normalization performed by the old script."""
+    """Add evidence-backed MAKAAO roles without rewriting source hierarchies."""
     classes = all_class_nodes(output)
 
-    # ChEBI target branch: selected ChEBI classes -> molecular entity -> Target.
-    chebi_classes = {node for node in classes if is_chebi_class(node)}
-    for class_iri in chebi_classes - {CHEBI_MOLECULAR_ENTITY}:
-        output.remove((class_iri, RDFS.subClassOf, None))
-        output.add((class_iri, RDFS.subClassOf, CHEBI_MOLECULAR_ENTITY))
-        output.add((class_iri, RDF.type, OWL.Class))
-    if chebi_classes:
-        output.remove((CHEBI_MOLECULAR_ENTITY, RDFS.subClassOf, None))
-        output.add((CHEBI_MOLECULAR_ENTITY, RDFS.subClassOf, MAKAAO.Target))
-        output.add((CHEBI_MOLECULAR_ENTITY, RDF.type, OWL.Class))
-        output.add((MAKAAO.Target, RDF.type, OWL.Class))
-
-    # Local UniProt classes -> UniProt Protein -> Target.
-    local_up_classes = {node for node in classes if is_local_up_class(node)}
-    for class_iri in local_up_classes:
-        output.remove((class_iri, RDFS.subClassOf, None))
-        output.add((class_iri, RDFS.subClassOf, UNIPROT_PROTEIN))
-        output.add((class_iri, RDF.type, OWL.Class))
-    if local_up_classes:
-        output.remove((UNIPROT_PROTEIN, RDFS.subClassOf, None))
-        output.add((UNIPROT_PROTEIN, RDFS.subClassOf, MAKAAO.Target))
-        output.add((UNIPROT_PROTEIN, RDF.type, OWL.Class))
-        output.add((MAKAAO.Target, RDF.type, OWL.Class))
-
-    # ORDO selected classes -> ORDO disease root -> AutoimmuneDisease.
-    ordo_classes = {node for node in classes if is_ordo_class(node)}
-    for class_iri in ordo_classes - {ORDO_DISEASE_ROOT}:
-        output.remove((class_iri, RDFS.subClassOf, None))
-        output.add((class_iri, RDFS.subClassOf, ORDO_DISEASE_ROOT))
-        output.add((class_iri, RDF.type, OWL.Class))
-    if ordo_classes:
-        output.remove((ORDO_DISEASE_ROOT, RDFS.subClassOf, None))
-        output.add((ORDO_DISEASE_ROOT, RDFS.subClassOf, MAKAAO.AutoimmuneDisease))
-        output.add((ORDO_DISEASE_ROOT, RDF.type, OWL.Class))
-        output.add((MAKAAO.AutoimmuneDisease, RDF.type, OWL.Class))
-
-    # UMLS CUI classes: disease takes priority over target, matching the old
-    # simplifier. Current KGs use local CUI_C... class IRIs; old KGs used UMLS
-    # concept IRIs, and both are supported.
-    cui_classes = {node for node in classes if is_cui_class(node)}
-    for class_iri in cui_classes:
-        output.remove((class_iri, RDFS.subClassOf, None))
+    for class_iri in sorted(classes, key=str):
         roles = role_by_class.get(class_iri, set())
-        parent = (
-            MAKAAO.AutoimmuneDisease
-            if MAKAAO.AutoimmuneDisease in roles
-            else MAKAAO.Target
-        )
-        output.add((class_iri, RDFS.subClassOf, parent))
+        supported_roles: set[URIRef] = set()
+
+        if (
+            MAKAAO.Target in roles
+            and (
+                is_chebi_class(class_iri)
+                or is_local_up_class(class_iri)
+                or is_cui_class(class_iri)
+            )
+        ):
+            supported_roles.add(MAKAAO.Target)
+
+        if (
+            MAKAAO.AutoimmuneDisease in roles
+            and (is_ordo_class(class_iri) or is_cui_class(class_iri))
+        ):
+            supported_roles.add(MAKAAO.AutoimmuneDisease)
+
+        for parent in supported_roles:
+            output.add((class_iri, RDFS.subClassOf, parent))
+            output.add((parent, RDF.type, OWL.Class))
+
+        # Keep an otherwise unclassified CUI in the neutral local CUI branch;
+        # absence of disease evidence is not evidence that it is a target.
+        if is_cui_class(class_iri) and not supported_roles:
+            output.add((class_iri, RDFS.subClassOf, MAKAAO.CUI))
+            output.add((MAKAAO.CUI, RDF.type, OWL.Class))
+
         output.add((class_iri, RDF.type, OWL.Class))
-        output.add((parent, RDF.type, OWL.Class))
 
-
+# remove entity types that are not allowed in lite KG
 def purge_excluded_resources(output: Graph) -> None:
     for banned in EXCLUDED_CLASSES:
         output.remove((banned, None, None))
@@ -570,7 +597,7 @@ def purge_excluded_resources(output: Graph) -> None:
         if predicate == RDFS.subClassOf and not isinstance(obj, URIRef):
             output.remove(triple)
 
-
+# make sure we have only classes and no instances
 def ensure_every_endpoint_is_a_class(output: Graph) -> None:
     class_nodes = all_class_nodes(output)
     for class_iri in class_nodes:
@@ -579,6 +606,7 @@ def ensure_every_endpoint_is_a_class(output: Graph) -> None:
 
 
 # ----------------------------- Validation/output -----------------------------
+# functions to perform check on the resulting lite KG
 def validate_lite_graph(graph: Graph) -> None:
     errors: list[str] = []
 
@@ -622,7 +650,7 @@ def validate_lite_graph(graph: Graph) -> None:
             + suffix
         )
 
-
+# export new lite KG
 def serialize_atomically(graph: Graph, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(
@@ -651,7 +679,7 @@ def serialize_atomically(graph: Graph, output_path: Path) -> None:
     finally:
         temporary_path.unlink(missing_ok=True)
 
-
+# function to perform transofrmation from original KG to lite KG as a command line call (do we really need this? maybe remove it)
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Create a class-only MAKAAO lite graph from the current full KG."
@@ -679,7 +707,7 @@ def parse_args() -> argparse.Namespace:
     )
     return parser.parse_args()
 
-
+# obtain new file names from original file names, to use as output path
 def derive_paths_from_explicit_input(input_path: Path) -> tuple[Path, Path]:
     """Derive output and schema paths without requiring a project checkout."""
     name = input_path.name
@@ -708,7 +736,7 @@ def derive_paths_from_explicit_input(input_path: Path) -> tuple[Path, Path]:
         input_path,
     )
 
-
+# main function where we call defined functions
 def main() -> None:
     args = parse_args()
 
@@ -735,6 +763,8 @@ def main() -> None:
         raise FileNotFoundError(f"Schema graph not found: {schema_path}")
     if input_path == output_path:
         raise ValueError("Input and output paths must be different")
+    if schema_path == output_path:
+        raise ValueError("Schema and output paths must be different")
 
     data = Graph()
     schema = Graph()
