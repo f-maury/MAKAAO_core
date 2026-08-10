@@ -22,11 +22,12 @@ from rdflib.namespace import XSD
 from datetime import date
 
 # ===================== SCRIPT VERSION =====================
-SCRIPT_VERSION = "1.2.28"
-SCRIPT_ITERATION = "2026-08-05-add-ordo-umls-exact-label-matches"
+SCRIPT_VERSION = "1.2.29"
+SCRIPT_ITERATION = "2026-08-10-chebi-target-mappings-and-umls-altlabels"
 
 # The dataset version is independent of the Python script version.
-KG_VERSION = "1.0.4test"  # from makaao_core_29-07-2026.xlsx
+#KG_VERSION = "1.0.4test"  # from makaao_core_29-07-2026.xlsx
+KG_VERSION = "sample"  # from makaao_sample.csv
 version = KG_VERSION  # retained for compatibility with the existing code
 
 # ===================== HARDCODED CONFIG =====================
@@ -59,7 +60,8 @@ KG_DIR = (PROJECT_DIR / "kg").resolve()
 
 BASE_DIR = str(DATA_DIR / "processed_tables")
 OUTPUT_DIR = str(DATA_DIR)
-makaao_core_name = str(DATA_DIR / "makaao_core.csv")
+#makaao_core_name = str(DATA_DIR / "makaao_core.csv")
+makaao_core_name = str(DATA_DIR / "makaao_sample.csv")
 OUTPUT_OWL_ENRICHED = str(KG_DIR / f"makaao_kg_{version}.rdf")
 OUTPUT_OWL_TBOX = str(KG_DIR / f"makaao_kg_{version}_ontology.owl")
 
@@ -67,12 +69,11 @@ OUTPUT_OWL_TBOX = str(KG_DIR / f"makaao_kg_{version}_ontology.owl")
 ORPHANET_HPO_LINKS = str(DATA_DIR / "enrichment_tables" / "orphanet_hpo_links.csv")
 LOINC_INDEX_CSV = str(DATA_DIR / "processed_tables" / "index_loinc.csv")
 LOINC_PART_TEST_JSON = str(DATA_DIR / "enrichment_tables" / "loinc_part_test_dict.json")
-LOINC_LABELS_JSON = str(DATA_DIR / "enrichment_tables" / "loinc_labels.json")
 CODE_NAMES_CSV = str(DATA_DIR / "enrichment_tables" / "code_names.csv")
 ORPHA_UMLS_MAPPINGS_JSON = str(
     DATA_DIR / "enrichment_tables" / "orpha_umls_mappings.json"
 )
-RESOURCE_PROVENANCE_JSON = str(DATA_DIR / "resource_provenance.json")
+
 
 # Pinned local OWL/RDF sources used to create minimal import modules.
 EXTERNAL_ONTOLOGY_FILES = {
@@ -93,7 +94,7 @@ REASONER_TIMEOUT_SECONDS = int(
 )
 JAVA_MAX_HEAP = os.environ.get("MAKAAO_JAVA_MAX_HEAP", "8G")
 ROBOT_EXECUTABLE = "robot"
-ROBOT_JAR = str(PROJECT_DIR / "tools" / "robot.jar")
+ROBOT_JAR = str(PROJECT_DIR / "robot.jar")
 
 # Internal implementation loaded automatically by this script. Users run only
 # this graph builder. The local project keeps the stable helper filename; script
@@ -136,6 +137,8 @@ EXTERNAL_IMPORT_IRIS = (
     UNIPROT_MODULE_IRI,
 )
 LOINC = Namespace("https://loinc.org/")
+LOINC_PROPERTY = Namespace("http://loinc.org/property/")
+LOINC_COMPONENT = LOINC_PROPERTY["COMPONENT"]
 MAKAAO_LOINC = Namespace("http://makaao.inria.fr/loinc/")
 
 DCTERMS = Namespace("http://purl.org/dc/terms/")
@@ -148,20 +151,6 @@ FOAF = Namespace("http://xmlns.com/foaf/0.1/")
 HPO_AUTOIMMUNE_ANTIBODY_POSITIVITY = HP["HP_0030057"]
 LABEL_COLLISION_REPORT_FILENAME = "class-label-close-match-report.tsv"
 
-# Exhaustive policy for automatic label-based mappings.
-# No other resource-kind combination is compared by the collision audit.
-# ORPHA↔UMLS mappings are handled separately from orpha_umls_mappings.json.
-LABEL_MATCH_KIND_PAIRS = frozenset(
-    {
-        frozenset({"umls_cui", "uniprot"}),
-        frozenset({"autoantibody", "loinc_part"}),
-        frozenset({"ordo_disease", "umls_cui"}),
-    }
-)
-LABEL_MATCH_ELIGIBLE_KINDS = frozenset(
-    kind for pair in LABEL_MATCH_KIND_PAIRS for kind in pair
-)
-
 # ===================== GLOBALS =====================
 relation_counter = 0
 document_map = {}
@@ -170,13 +159,14 @@ GLOBAL_ACTIVITY = None
 # ---------- Label de-duplication state ----------
 # We maintain, per-node:
 # - a cross-property set of seen texts ("any")
-# - per-property sets for SKOS.prefLabel and RDFS.label
+# - per-property sets for SKOS.prefLabel, SKOS.altLabel and RDFS.label
 # Rule: block duplicates globally, EXCEPT allow a single cross-duplicate
 #       between rdfs:label and skos:prefLabel.
 _label_seen = defaultdict(
     lambda: {
         "any": set(),
         SKOS.prefLabel: set(),
+        SKOS.altLabel: set(),
         RDFS.label: set(),
     }
 )
@@ -466,8 +456,24 @@ def _is_loinc_part_class(graph: Graph, node: URIRef) -> bool:
     )
 
 
+def _is_chebi_class(node: URIRef) -> bool:
+    """Return whether ``node`` is an external ChEBI class IRI."""
+    return (
+        isinstance(node, URIRef)
+        and str(node).startswith("http://purl.obolibrary.org/obo/CHEBI_")
+    )
+
+
+def _is_target_class(graph: Graph, class_iri: URIRef) -> bool:
+    """Return whether an individual of ``class_iri`` is used as a MAKAAO Target."""
+    return any(
+        (instance, RDF.type, MAKAAO.Target) in graph
+        for instance in graph.subjects(RDF.type, class_iri)
+    )
+
+
 def _label_collision_resource_kind(graph: Graph, node: URIRef) -> str:
-    """Return the generated-resource family used by close-match rules."""
+    """Return the generated/external resource family used by close-match rules."""
     text = str(node)
     local_tail = text[len(str(MAKAAO)) :] if text.startswith(str(MAKAAO)) else ""
     if re.fullmatch(r"aab_\d+", local_tail):
@@ -476,12 +482,11 @@ def _label_collision_resource_kind(graph: Graph, node: URIRef) -> str:
         return "umls_cui"
     if re.fullmatch(r"UP_[A-Za-z0-9]+", local_tail):
         return "uniprot"
-    if re.fullmatch(r"http://www\.orpha\.net/ORDO/Orphanet_\d+", text):
-        return "ordo_disease"
+    if _is_chebi_class(node):
+        return "chebi"
     if _is_loinc_part_class(graph, node):
         return "loinc_part"
     return "other"
-
 
 def _stable_text_key(value: str) -> tuple[str, str]:
     """Return a total, reproducible ordering key for report strings."""
@@ -489,27 +494,25 @@ def _stable_text_key(value: str) -> tuple[str, str]:
 
 
 def _class_label_index(graph: Graph):
-    """Index labels only for resource kinds eligible for automatic matching.
+    """Index all supported labels on eligible explicitly declared classes.
 
-    The exhaustive eligible kinds are defined by ``LABEL_MATCH_KIND_PAIRS``.
-    HPO, ChEBI, same-kind pairs, generated LOINC Terms, and all other classes
-    are therefore never compared by this audit. ORDO participates only as an
-    ORDO disease paired with a UMLS CUI.
+    The audit compares ``rdfs:label``, ``skos:prefLabel`` and
+    ``skos:altLabel``. Generated LOINC Terms are excluded; only generated LOINC
+    Part classes participate.
     """
-    classes = set()
-    kinds_by_class = {}
-    for class_type in (OWL.Class, RDFS.Class):
-        for node in graph.subjects(RDF.type, class_type):
-            if not isinstance(node, URIRef):
-                continue
-            kind = _label_collision_resource_kind(graph, node)
-            if kind not in LABEL_MATCH_ELIGIBLE_KINDS:
-                continue
-            classes.add(node)
-            kinds_by_class[node] = kind
-
+    classes = {
+        node
+        for class_type in (OWL.Class, RDFS.Class)
+        for node in graph.subjects(RDF.type, class_type)
+        if isinstance(node, URIRef)
+        and (
+            not str(node).startswith(str(MAKAAO_LOINC))
+            or _is_loinc_part_class(graph, node)
+        )
+    }
     labels_by_class = defaultdict(lambda: defaultdict(set))
     classes_by_label = defaultdict(set)
+
     for class_iri in classes:
         for predicate in (SKOS.prefLabel, RDFS.label, SKOS.altLabel):
             for value in graph.objects(class_iri, predicate):
@@ -523,52 +526,66 @@ def _class_label_index(graph: Graph):
                 )
                 classes_by_label[normalized].add(class_iri)
 
-    return labels_by_class, classes_by_label, kinds_by_class
+    return labels_by_class, classes_by_label
 
 
 def add_label_collision_close_matches(graph: Graph) -> list[dict[str, str | int]]:
-    """Link exact normalized-label matches for the three permitted kind pairs.
+    """Audit normalized class-label collisions and add permitted mappings.
 
-    The audit searches only UMLS CUI↔UniProt, autoantibody↔LOINC Part, and
-    ORDO disease↔UMLS CUI. Identifier-based ORPHA↔UMLS mappings are still added
-    separately from the enrichment dictionary. No same-kind pair or other
-    cross-kind pair is searched.
+    The function is called once after all input-derived graph construction and
+    before TBox extraction or reasoning. Distinct explicitly declared classes
+    are candidates when any ``rdfs:label``, ``skos:prefLabel`` or
+    ``skos:altLabel`` matches after whitespace normalization and case folding.
+
+    Symmetric ``skos:closeMatch`` links are added only for:
+
+    * distinct UMLS CUI, UniProt and ChEBI classes when both classes are
+      evidenced as MAKAAO targets; or
+    * a MAKAAO autoantibody class and a generated LOINC Part class.
+
+    No specific resource pairs are hard-coded. All other collisions remain
+    report-only because equal labels can denote concepts with different scopes.
     """
-    labels_by_class, classes_by_label, kinds_by_class = _class_label_index(graph)
+    labels_by_class, classes_by_label = _class_label_index(graph)
     shared_by_pair = defaultdict(set)
-
     for normalized_label, class_iris in classes_by_label.items():
         for left, right in combinations(sorted(class_iris, key=str), 2):
-            kind_pair = frozenset({kinds_by_class[left], kinds_by_class[right]})
-            if kind_pair not in LABEL_MATCH_KIND_PAIRS:
-                continue
             shared_by_pair[(left, right)].add(normalized_label)
 
     report_rows: list[dict[str, str | int]] = []
     for (left, right), shared_labels in sorted(
-        shared_by_pair.items(),
-        key=lambda item: (str(item[0][0]), str(item[0][1])),
+        shared_by_pair.items(), key=lambda item: (str(item[0][0]), str(item[0][1]))
     ):
-        left_kind = kinds_by_class[left]
-        right_kind = kinds_by_class[right]
-        kind_pair = frozenset({left_kind, right_kind})
-        if kind_pair == frozenset({"umls_cui", "uniprot"}):
-            rule = "exact normalized label match across UMLS CUI and UniProt"
-        elif kind_pair == frozenset({"autoantibody", "loinc_part"}):
-            rule = "exact normalized label match across autoantibody and LOINC Part"
-        elif kind_pair == frozenset({"ordo_disease", "umls_cui"}):
-            rule = "exact normalized label match across ORDO disease and UMLS CUI"
-        else:
-            raise RuntimeError(
-                f"Unexpected label-match kind pair: {left_kind!r}, {right_kind!r}"
+        left_kind = _label_collision_resource_kind(graph, left)
+        right_kind = _label_collision_resource_kind(graph, right)
+        kind_pair = {left_kind, right_kind}
+
+        decision = "review_required"
+        rule = "same normalized label alone is insufficient evidence"
+        target_kinds = {"umls_cui", "uniprot", "chebi"}
+        if (
+            left_kind in target_kinds
+            and right_kind in target_kinds
+            and left_kind != right_kind
+            and _is_target_class(graph, left)
+            and _is_target_class(graph, right)
+        ):
+            decision = "linked"
+            rule = (
+                "exact normalized label match across distinct MAKAAO target "
+                "classes (UMLS CUI / UniProt / ChEBI)"
             )
+        elif kind_pair == {"autoantibody", "loinc_part"}:
+            decision = "linked"
+            rule = "any exact normalized label match across autoantibody and LOINC Part"
 
         triples_added = 0
-        for subject, obj in ((left, right), (right, left)):
-            triple = (subject, SKOS.closeMatch, obj)
-            if triple not in graph:
-                graph.add(triple)
-                triples_added += 1
+        if decision == "linked":
+            for subject, obj in ((left, right), (right, left)):
+                triple = (subject, SKOS.closeMatch, obj)
+                if triple not in graph:
+                    graph.add(triple)
+                    triples_added += 1
 
         left_matching = sorted(
             {
@@ -588,7 +605,7 @@ def add_label_collision_close_matches(graph: Graph) -> list[dict[str, str | int]
         )
         report_rows.append(
             {
-                "decision": "linked",
+                "decision": decision,
                 "rule": rule,
                 "class_1": str(left),
                 "class_1_kind": left_kind,
@@ -986,6 +1003,48 @@ def read_code_names_umls(path):
 
     return id2name, id2url  # 2 dicts: CUI -> name, CUI -> url
 
+def read_code_names_umls_synonyms(path):
+    """Read CUI -> English alternative labels from ``code_names.csv``."""
+    result = {}
+    for row_number, r in enumerate(read_csv_rows(path), start=2):
+        if (r.get("source") or "").strip().lower() != "umls":
+            continue
+        cui = canonical_cui_code(r.get("id"))
+        if not cui:
+            continue
+        raw = (r.get("synonyms_en") or "").strip()
+        if not raw:
+            continue
+        try:
+            values = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"{path}: row {row_number} synonyms_en must be a JSON array: {exc}"
+            ) from exc
+        if not isinstance(values, list):
+            raise ValueError(
+                f"{path}: row {row_number} synonyms_en must be a JSON array"
+            )
+
+        preferred_norm = _norm_label_text(r.get("name") or "")
+        seen = set()
+        labels = []
+        for value in values:
+            label = re.sub(r"\s+", " ", str(value or "")).strip()
+            normalized = _norm_label_text(label)
+            if (
+                not label
+                or not normalized
+                or normalized == preferred_norm
+                or normalized in seen
+            ):
+                continue
+            seen.add(normalized)
+            labels.append(label)
+        if labels:
+            result[cui] = tuple(labels)
+    return result
+
 def read_code_names_orpha(path):
     id2name, id2url = {}, {}
     rows = read_csv_rows(path)
@@ -1053,6 +1112,34 @@ def read_code_names_hpo(path):
             id2url[code] = url
     return id2name, id2url  # 2 dicts: HPO code -> name, HPO code -> url
 
+
+def read_code_names_loinc(path):
+    """Return LOINC Part and Term labels from ``code_names.csv``."""
+    part_names, term_names = {}, {}
+    rows = read_csv_rows(path)
+    for row_number, row in enumerate(rows, start=2):
+        if (row.get("source") or "").strip().lower() != "loinc":
+            continue
+
+        raw_code = (row.get("id") or "").strip()
+        label = (row.get("name") or "").strip()
+        code = canonical_loinc_code(raw_code)
+        if not code:
+            raise ValueError(
+                f"{path}: row {row_number} has an invalid LOINC identifier: "
+                f"{raw_code!r}"
+            )
+
+        names = part_names if code.startswith("LP") else term_names
+        if code in names and names[code] != label:
+            raise ValueError(
+                f"{path}: conflicting labels for LOINC {code}: "
+                f"{names[code]!r} and {label!r}"
+            )
+        names.setdefault(code, label)
+
+    return part_names, term_names
+
 # ===================== REIFICATION =====================
 def add_reified_relation(g, subj, pred, obj, prov_str):
     """
@@ -1115,12 +1202,14 @@ def add_reified_relation(g, subj, pred, obj, prov_str):
 
 # ===================== ENRICHMENT HELPERS =====================
 
-def ensure_cui_class(g, cui_code, preferred_label=None, source_url=None):
+def ensure_cui_class(
+    g, cui_code, preferred_label=None, source_url=None, synonyms=None
+):
     """Create or complete one local class for a canonical UMLS CUI.
 
-    Every local CUI class receives a label. A resolved preferred name is used
-    when available; otherwise the canonical CUI itself is the deterministic
-    fallback.
+    The selected preferred name is attached as ``skos:prefLabel`` and
+    ``rdfs:label``. Distinct English MRCONSO alternatives are attached as
+    ``skos:altLabel`` values.
     """
     code = canonical_cui_code(cui_code)
     if not code:
@@ -1130,6 +1219,8 @@ def ensure_cui_class(g, cui_code, preferred_label=None, source_url=None):
     g.add((cui_cls, RDFS.subClassOf, MAKAAO.CUI))
     label = str(preferred_label or "").strip() or code
     add_pref(g, cui_cls, label)
+    for synonym in synonyms or ():
+        add_label(g, cui_cls, SKOS.altLabel, synonym)
     external = (
         normalize_http_iri(source_url, f"UMLS URL for {code}")
         if source_url
@@ -1139,7 +1230,9 @@ def ensure_cui_class(g, cui_code, preferred_label=None, source_url=None):
     return cui_cls
 
 
-def ensure_cui_class_and_instance(g, cui_code, preferred_label=None, source_url=None):
+def ensure_cui_class_and_instance(
+    g, cui_code, preferred_label=None, source_url=None, synonyms=None
+):
     """Create one local CUI class and one local instance for a canonical CUI."""
     code = canonical_cui_code(cui_code)
     if not code:
@@ -1149,11 +1242,14 @@ def ensure_cui_class_and_instance(g, cui_code, preferred_label=None, source_url=
         code,
         preferred_label=preferred_label,
         source_url=source_url,
+        synonyms=synonyms,
     )
     cui_inst = MAKAAO[f"CUI_{code}_instance"]
     g.add((cui_inst, RDF.type, cui_cls))
     label = str(preferred_label or "").strip() or code
     add_pref(g, cui_inst, label)
+    for synonym in synonyms or ():
+        add_label(g, cui_inst, SKOS.altLabel, synonym)
     external = (
         normalize_http_iri(source_url, f"UMLS URL for {code}")
         if source_url
@@ -1266,6 +1362,7 @@ def add_orpha_umls_close_matches(
     umls_names=None,
     umls_urls=None,
     orpha_names=None,
+    umls_synonyms=None,
 ):
     """Materialize symmetric class-level ORPHA/UMLS ``skos:closeMatch`` links.
 
@@ -1276,20 +1373,21 @@ def add_orpha_umls_close_matches(
     umls_names = umls_names or {}
     umls_urls = umls_urls or {}
     orpha_names = orpha_names or {}
+    umls_synonyms = umls_synonyms or {}
     triples_added = 0
     for orpha, cui in mapping_pairs:
         orpha_cls = URIRef(f"http://www.orpha.net/ORDO/Orphanet_{orpha}")
         graph.add((orpha_cls, RDF.type, OWL.Class))
         graph.add((orpha_cls, RDFS.subClassOf, MAKAAO.AutoimmuneDisease))
-        orpha_label = str(orpha_names.get(orpha) or "").strip()
-        if orpha_label:
-            add_pref(graph, orpha_cls, orpha_label)
         cui_cls = ensure_cui_class(
             graph,
             cui,
             preferred_label=umls_names.get(cui) or orpha_names.get(orpha),
             source_url=umls_urls.get(cui),
+            synonyms=umls_synonyms.get(cui, ()),
         )
+        # ORDO and UMLS disease concepts use the same class-level MAKAAO role.
+        graph.add((cui_cls, RDFS.subClassOf, MAKAAO.AutoimmuneDisease))
         for subject, obj in ((orpha_cls, cui_cls), (cui_cls, orpha_cls)):
             triple = (subject, SKOS.closeMatch, obj)
             if triple not in graph:
@@ -1305,7 +1403,12 @@ def init_graph():  # start an empty knowledge graph and add a few basic things t
     document_map = {}
     GLOBAL_ACTIVITY = None
     _label_seen = defaultdict(
-        lambda: {"any": set(), SKOS.prefLabel: set(), RDFS.label: set()}
+        lambda: {
+            "any": set(),
+            SKOS.prefLabel: set(),
+            SKOS.altLabel: set(),
+            RDFS.label: set(),
+        }
     )
     g = Graph()
     # Prefixes
@@ -1327,6 +1430,7 @@ def init_graph():  # start an empty knowledge graph and add a few basic things t
     g.bind("void", VOID)
     g.bind("foaf", FOAF)
     g.bind("loinc", LOINC)
+    g.bind("loinc_property", LOINC_PROPERTY)
     g.bind("mloinc", MAKAAO_LOINC)
 
     # Ontology header
@@ -1359,18 +1463,34 @@ def init_graph():  # start an empty knowledge graph and add a few basic things t
     g.add((MAKAAO.Autoantibody, RDFS.label, Literal("Autoantibody")))
     g.add((MAKAAO.Autoantibody, RDFS.subClassOf, MAKAAO.BiomolecularEntity))
     g.add((MAKAAO.AutoantibodyPositivity, RDF.type, OWL.Class))
-    g.add((MAKAAO.AutoantibodyPositivity, RDFS.label, Literal("Autoantibody positivity")))
-    g.add((MAKAAO.AutoantibodyPositivity, RDFS.subClassOf, BIOLINK.PhenotypicFeature))
+    add_pref(
+        g,
+        MAKAAO.AutoantibodyPositivity,
+        "Autoimmune antibody positivity",
+    )
+    g.add(
+        (
+            MAKAAO.AutoantibodyPositivity,
+            RDFS.subClassOf,
+            BIOLINK.PhenotypicFeature,
+        )
+    )
+    g.add(
+        (
+            MAKAAO.AutoantibodyPositivity,
+            SKOS.closeMatch,
+            HPO_AUTOIMMUNE_ANTIBODY_POSITIVITY,
+        )
+    )
     g.add(
         (
             HPO_AUTOIMMUNE_ANTIBODY_POSITIVITY,
-            RDFS.subClassOf,
+            SKOS.closeMatch,
             MAKAAO.AutoantibodyPositivity,
         )
     )
     g.add((MAKAAO.AutoimmuneDisease, RDF.type, OWL.Class))
     g.add((MAKAAO.AutoimmuneDisease, RDFS.label, Literal("Autoimmune disease")))
-    # g.add((MAKAAO.Autoantibody, SKOS.closeMatch, URIRef("http://snomed.info/id/30621004"))) # we define a closeMatch between our Autoantibody class and the corresponding one in SNOMED
     g.add((MAKAAO.Target, RDF.type, OWL.Class))
     g.add((MAKAAO.Target, RDFS.label, Literal("Target")))
     g.add((MAKAAO.CUI, RDF.type, OWL.Class))
@@ -1553,21 +1673,24 @@ def build_core(
     hpo_cn_names,
     chebi_cn_names,
     chebi_cn_urls,
+    umls_synonyms=None,
 ):
     # External root classes are retained as domain classes. Target is assigned
     # to the selected local individuals, not globally to every protein/molecule.
     uniprot_protein = UP.Protein
 
     # Declare makaao_core CSV as a Document used by the Activity
-    csv_doc = MAKAAO["makaao_core.csv"]
+    csv_doc = MAKAAO["makaao_core.csv"] # add something with Core version here?
     g.add((csv_doc, RDF.type, MAKAAO.Document))
-    g.add((csv_doc, RDFS.seeAlso, URIRef("https://makaao.inria.fr/data/makaao_core.csv")))
+    g.add((csv_doc, RDFS.seeAlso, URIRef("https://makaao.inria.fr/data/makaao_core.csv"))) # add something with Core version here?
     add_pref(g, csv_doc, os.path.basename(makaao_core_name))
     g.add((GLOBAL_ACTIVITY, PROV.used, csv_doc))
 
     hpo_local_names = hpo_cn_names or {}
+    umls_synonyms = umls_synonyms or {}
     primary_labels, aab_class_uri = {}, {}
     pos_uris_by_idx = {}
+    positivity_instances_by_hpo = defaultdict(set)
 
     # Build classes/instances
     for idx in sorted(data["indices"], key=lambda x: int(x)):
@@ -1615,57 +1738,81 @@ def build_core(
         )  # we create an instance of the current AAb class with its preferred label
         add_pref(g, inst, primary_labels[idx])
 
-        # Local positivity class. External HPO classes are used only as
-        # additional types of the local instances; their class axioms are
-        # supplied by the imported HPO module and are not modified here.
-        local_pos_cls = MAKAAO[f"positivity_{idx}"]
+        # Every autoantibody has exactly one local positivity class and one
+        # local positivity individual. HPO correspondences are non-logical
+        # closeMatch links on that class; no HPO identifier enters a local URI.
         local_pos_label = primary_labels[idx] + " positivity"
-        g.add((local_pos_cls, RDF.type, OWL.Class))
-        g.add((local_pos_cls, RDFS.subClassOf, MAKAAO.AutoantibodyPositivity))
-        add_pref(g, local_pos_cls, local_pos_label)
-        pos_uris_by_idx[idx] = [local_pos_cls]
-
-        hpo_types = []
-        for hp_code in data["hpo_list"].get(idx, []):
-            code_norm = canonical_hpo_code(hp_code)
-            hpo_cls = hp_to_obo_uri(code_norm)
-            if hpo_cls and code_norm:
-                hpo_label = (hpo_local_names.get(code_norm) or "").strip()
-                hpo_types.append((hpo_cls, hpo_label or code_norm))
-
-        if hpo_types:
-            for j, (hpo_cls, hpo_label) in enumerate(hpo_types, start=1):
-                suffix = "" if len(hpo_types) == 1 else f"_{j}"
-                pos_inst = MAKAAO[f"positivity_{idx}{suffix}_instance"]
-                g.add((pos_inst, RDF.type, local_pos_cls))
-                g.add((pos_inst, RDF.type, MAKAAO.AutoantibodyPositivity))
-                g.add((pos_inst, RDF.type, hpo_cls))
-                add_pref(g, pos_inst, hpo_label)
-                g.add((inst, BIOLINK.biomarker_for, pos_inst))
+        pos_inst = MAKAAO[f"positivity_{idx}_instance"]
+        mapped_hpo_codes = []
+        if idx == "18":
+            structural_pos_cls = MAKAAO.AutoantibodyPositivity
+            root_code = "HP:0030057"
+            root_label = (
+                (hpo_local_names.get(root_code) or "").strip()
+                or "Autoimmune antibody positivity"
+            )
+            add_pref(g, structural_pos_cls, root_label)
+            add_pref(g, HPO_AUTOIMMUNE_ANTIBODY_POSITIVITY, root_label)
+            positivity_instance_label = root_label
+            mapped_hpo_codes.append(root_code)
         else:
-            pos_inst = MAKAAO[f"positivity_{idx}_instance"]
-            g.add((pos_inst, RDF.type, local_pos_cls))
-            g.add((pos_inst, RDF.type, MAKAAO.AutoantibodyPositivity))
-            add_pref(g, pos_inst, local_pos_label)
-            g.add((inst, BIOLINK.biomarker_for, pos_inst))
+            structural_pos_cls = MAKAAO[f"positivity_{idx}"]
+            g.add((structural_pos_cls, RDF.type, OWL.Class))
+            add_pref(g, structural_pos_cls, local_pos_label)
+            positivity_instance_label = local_pos_label
 
-    # mirror taxonomy to positivity
-    for idx, parents in data["parents"].items():
-        child_list = pos_uris_by_idx.get(
-            idx, [MAKAAO[f"positivity_{idx}"]]
-        )  # we get the positivity URIS for the current AAb
-        for p in parents:
-            if p not in data["indices"]:
-                continue
-            parent_list = pos_uris_by_idx.get(
-                p, [MAKAAO[f"positivity_{p}"]]
-            )  # for eahc parent of the current aab, we get the corresponding positivity URI
-            for c_uri in child_list:
-                for p_uri in parent_list:
-                    g.add(
-                        (c_uri, RDFS.subClassOf, p_uri)
-                    )  # we make the subsumption link between the child and parent positivity URIs
-                    
+            # Link the one AAb-specific positivity class directly to every
+            # corresponding HPO class. Materialize both directions because
+            # skos:closeMatch is symmetric and the canonical KG is checked
+            # without relying on OWL inference. HPO labels remain on HPO resources.
+            seen_hpo_codes = set()
+            for hp_code in data["hpo_list"].get(idx, []):
+                code_norm = canonical_hpo_code(hp_code)
+                hpo_cls = hp_to_obo_uri(code_norm)
+                if not hpo_cls or not code_norm or code_norm in seen_hpo_codes:
+                    continue
+                seen_hpo_codes.add(code_norm)
+                hpo_label = (hpo_local_names.get(code_norm) or "").strip()
+                g.add((structural_pos_cls, SKOS.closeMatch, hpo_cls))
+                g.add((hpo_cls, SKOS.closeMatch, structural_pos_cls))
+                add_pref(g, hpo_cls, hpo_label or code_norm)
+                mapped_hpo_codes.append(code_norm)
+
+        # The structural class alone participates in the mirrored taxonomy.
+        pos_uris_by_idx[idx] = [structural_pos_cls]
+
+        # The individual instantiates only the one AAb-specific local class.
+        add_pref(g, pos_inst, positivity_instance_label)
+        g.add((pos_inst, RDF.type, structural_pos_cls))
+        for hpo_code in mapped_hpo_codes:
+            positivity_instances_by_hpo[hpo_code].add(pos_inst)
+        # Materialize both directions of the Biolink inverse pair so the
+        # canonical KG can be validated without requiring a reasoner.
+        g.add((inst, BIOLINK.biomarker_for, pos_inst))
+        g.add((pos_inst, BIOLINK.has_biomarker, inst))
+
+    # Mirror only the autoantibody taxonomy in the one-per-AAb local positivity
+    # classes. HPO closeMatch mappings do not participate in this hierarchy.
+    for idx in sorted(data["indices"], key=lambda value: int(value)):
+        if idx == "18":
+            continue
+
+        child_uri = pos_uris_by_idx[idx][0]
+        parents = data["parents"].get(idx) or []
+        valid_parents = sorted(
+            {p for p in parents if p != idx and p in data["indices"]},
+            key=lambda value: int(value),
+        )
+        parent_list = (
+            [pos_uris_by_idx[parent_idx][0] for parent_idx in valid_parents]
+            if valid_parents
+            else [MAKAAO.AutoantibodyPositivity]
+        )
+
+        for parent_uri in parent_list:
+            if child_uri != parent_uri:
+                g.add((child_uri, RDFS.subClassOf, parent_uri))
+
 
     # UMLS targets
     umls_local_names = umls_cn_names or {}  # umls_names from code_names table
@@ -1680,7 +1827,11 @@ def build_core(
             preferred = umls_local_names.get(cui_key)
             source_url = (umls_cn_urls or {}).get(cui_key)
             _, cui_uri = ensure_cui_class_and_instance(
-                g, cui_key, preferred_label=preferred, source_url=source_url
+                g,
+                cui_key,
+                preferred_label=preferred,
+                source_url=source_url,
+                synonyms=umls_synonyms.get(cui_key, ()),
             )
             g.add((cui_uri, RDF.type, MAKAAO.Target))
             g.add((inst_aab, BAO_HAS_TARGET, cui_uri))
@@ -1737,25 +1888,30 @@ def build_core(
             chebi_ind = MAKAAO[
                 code_obo + "_instance"
             ]  # we create the URI of the chebi instance
-            # The external ChEBI class declaration and hierarchy are supplied
-            # by the imported ChEBI module.
+            # Expose the used external ChEBI class in the canonical MAKAAO KG.
+            # Its genuine ChEBI hierarchy remains supplied by the imported module;
+            # ``Target`` remains a contextual role on the local individual.
+            g.add((chebi_cls, RDF.type, OWL.Class))
             g.add((chebi_ind, RDF.type, chebi_cls))
-            g.add(
-                (chebi_ind, RDF.type, MAKAAO.Target)
-            )
+            g.add((chebi_ind, RDF.type, MAKAAO.Target))
+
             chebi_name = (chebi_cn_names or {}).get(code_colon)
-            if chebi_name:  # if we find a name for that chebi id from code_names table, we add it as prefLabel and rdfs:label
+            if chebi_name:
+                add_pref(g, chebi_cls, chebi_name)
                 add_pref(g, chebi_ind, chebi_name)
-                g.add((chebi_ind, SKOS.notation, Literal(code_colon)))
-            else:  # else we just add the chebi id as prefLabel and rdfs:label
+            else:
+                add_pref(g, chebi_cls, code_colon)
                 add_pref(g, chebi_ind, code_colon)
-            chebi_url = (chebi_cn_urls or {}).get(
-                code_colon
-            )  # we try to get the chebi url from code_names table
+            g.add((chebi_cls, SKOS.notation, Literal(code_colon)))
+            g.add((chebi_ind, SKOS.notation, Literal(code_colon)))
+
+            chebi_url = (chebi_cn_urls or {}).get(code_colon)
             if chebi_url:
-                g.add(
-                    (chebi_ind, RDFS.seeAlso, normalize_http_iri(chebi_url, f"ChEBI URL for {code_colon}"))
-                )  # we add seeAlso relation if we find a url (the real chebi URI)
+                external_chebi = normalize_http_iri(
+                    chebi_url, f"ChEBI URL for {code_colon}"
+                )
+                g.add((chebi_cls, RDFS.seeAlso, external_chebi))
+                g.add((chebi_ind, RDFS.seeAlso, external_chebi))
             g.add((inst_aab, BAO_HAS_TARGET, chebi_ind))
             g.add((chebi_ind, BAO_IS_TARGET_FOR, inst_aab))
             for p in pmids or [""]:
@@ -1763,15 +1919,23 @@ def build_core(
                     g, inst_aab, BAO_HAS_TARGET, chebi_ind, p
                 )  # for each source we have, we add a reified relation to carry provenance
 
+    return {
+        hpo_code: tuple(sorted(instances, key=str))
+        for hpo_code, instances in positivity_instances_by_hpo.items()
+    }
+
 def process_diseases(
     g,
     data,
     orpha_hpo_links,
+    positivity_instances_by_hpo,
     umls_cn_names,
     umls_cn_urls=None,
     hpo_cn_names=None,
+    umls_synonyms=None,
 ):
     hpo_cn_names = hpo_cn_names or {}
+    umls_synonyms = umls_synonyms or {}
 
     orpha_cn_names, _ = (
         read_code_names_orpha(CODE_NAMES_CSV)
@@ -1798,13 +1962,11 @@ def process_diseases(
                 # The ORDO declaration and source hierarchy come from the
                 # imported ORDO module. This is the MAKAAO alignment axiom.
                 g.add((d_cls, RDFS.subClassOf, MAKAAO.AutoimmuneDisease))
-                orpha_name = (orpha_cn_names.get(orpha_num) or "").strip()
-                if orpha_name:
-                    add_pref(g, d_cls, orpha_name)
                 inst = MAKAAO[
                     f"orpha_{orpha_num}_instance"
                 ]  # also add instance of Orphanet class
                 g.add((inst, RDF.type, d_cls))
+                orpha_name = (orpha_cn_names.get(orpha_num) or "").strip()
                 if orpha_name:
                     add_pref(g, inst, orpha_name)
 
@@ -1827,55 +1989,70 @@ def process_diseases(
                         (hpo_cn_names.get(code_norm) or "").strip()
                         or (link.get("HPOTerm") or link.get("hpoterm") or "").strip()
                     )
-                    # Use one deterministic local phenotype individual per
-                    # HPO class. Do not reuse an Autoantibody-specific positivity
-                    # individual and do not modify the external HPO class.
-                    pos_inst = MAKAAO[f"hpo_{make_valid(code_norm)}_instance"]
-                    g.add((pos_inst, RDF.type, pos_uri))
-                    if term:
-                        add_pref(g, pos_inst, term)
-
-                    g.add((inst, SIO["SIO_001279"], pos_inst))  # has_phenotype
-                    g.add((pos_inst, SIO["SIO_001280"], inst))  # is_phenotype_of
-                    class_label = g.value(pos_uri, RDFS.label) or g.value(pos_uri, SKOS.prefLabel)
-                    if class_label:
-                        g.add((pos_inst, RDFS.label, class_label))
-                    add_reified_relation(
-                        g,
-                        inst,
-                        SIO["SIO_001279"],
-                        pos_inst,
-                        "https://www.orphadata.com/data/xml/en_product4.xml",
+                    # Reuse local positivity individuals whenever this HPO
+                    # class corresponds to a generated positivity class. Only
+                    # otherwise instantiate the external HPO class directly.
+                    phenotype_instances = positivity_instances_by_hpo.get(
+                        code_norm, ()
                     )
-                    add_reified_relation(
-                        g,
-                        pos_inst,
-                        SIO["SIO_001280"],
-                        inst,
-                        "https://www.orphadata.com/data/xml/en_product4.xml",
-                    )
+                    if not phenotype_instances:
+                        pos_inst = MAKAAO[f"hpo_{make_valid(code_norm)}_instance"]
+                        g.add((pos_inst, RDF.type, pos_uri))
+                        if term:
+                            add_pref(g, pos_inst, term)
+                        class_label = g.value(pos_uri, RDFS.label) or g.value(
+                            pos_uri, SKOS.prefLabel
+                        )
+                        if class_label:
+                            g.add((pos_inst, RDFS.label, class_label))
+                        phenotype_instances = (pos_inst,)
 
-            # UMLS CUI
+                    for pos_inst in phenotype_instances:
+                        g.add((inst, SIO["SIO_001279"], pos_inst))  # has_phenotype
+                        g.add((pos_inst, SIO["SIO_001280"], inst))  # is_phenotype_of
+                        add_reified_relation(
+                            g,
+                            inst,
+                            SIO["SIO_001279"],
+                            pos_inst,
+                            "https://www.orphadata.com/data/xml/en_product4.xml",
+                        )
+                        add_reified_relation(
+                            g,
+                            pos_inst,
+                            SIO["SIO_001280"],
+                            inst,
+                            "https://www.orphadata.com/data/xml/en_product4.xml",
+                        )
+
+            # UMLS CUI disease
             elif cui_norm:  # if current disease code contains a CUI:
                 code_norm = cui_norm
                 preferred = (umls_cn_names or {}).get(code_norm)
                 source_url = (umls_cn_urls or {}).get(code_norm)
-                _, inst = ensure_cui_class_and_instance(
-                    g, code_norm, preferred_label=preferred, source_url=source_url
+                cui_cls, inst = ensure_cui_class_and_instance(
+                    g,
+                    code_norm,
+                    preferred_label=preferred,
+                    source_url=source_url,
+                    synonyms=umls_synonyms.get(code_norm, ()),
                 )
+                # Harmonize with ORDO disease modelling: classify the concept
+                # class, not the individual, as an autoimmune disease.
+                g.add((cui_cls, RDFS.subClassOf, MAKAAO.AutoimmuneDisease))
 
-            # last case, if code is not a properly formatted orpha or CUI code, we just create a generic instance with the code as label
+            # Last case: if the disease value is neither an ORPHA identifier nor
+            # a CUI, create only a generic local individual. Since no dedicated
+            # disease class exists for this fallback, direct typing is retained.
             else:
                 code_norm = code_upper.replace("CUI:", "").strip()
                 fragment = safe_local_fragment(code_norm, prefix="disease")
                 inst = MAKAAO[f"{fragment}_instance"]
                 add_pref(g, inst, code_upper)
+                g.add((inst, RDF.type, MAKAAO.AutoimmuneDisease))
 
             if inst is None:
                 continue
-            g.add(
-                (inst, RDF.type, MAKAAO.AutoimmuneDisease)
-            )  # if no instance has been created yet, we create one.
             g.add(
                 (aab_inst, SIO["SIO_001403"], inst)
             )  # we link that disease instance to the current aab instance
@@ -1905,10 +2082,11 @@ def process_loinc_mappings(
     g,
     loinc_index_csv,
     keep_indices,
+    part_labels,
+    term_labels,
     part_test_json=LOINC_PART_TEST_JSON,
-    labels_json=LOINC_LABELS_JSON,
 ):
-    """Create relevant LOINC classes and instances, then link the instances."""
+    """Create relevant LOINC resources using labels from ``code_names.csv``."""
     map_rows = read_csv_rows(loinc_index_csv)
     if not map_rows:
         return
@@ -1946,44 +2124,6 @@ def process_loinc_mappings(
         for part_code, test_codes in part_test_sets.items()
     }
 
-    raw_labels = read_required_json_object(labels_json, "LOINC label dictionary")
-    if "parts" not in raw_labels or "tests" not in raw_labels:
-        raise ValueError(
-            f"{labels_json} must contain both 'parts' and 'tests' JSON objects"
-        )
-    raw_part_labels = raw_labels["parts"]
-    raw_test_labels = raw_labels["tests"]
-    if not isinstance(raw_part_labels, dict):
-        raise ValueError(f"{labels_json} field 'parts' must be a JSON object")
-    if not isinstance(raw_test_labels, dict):
-        raise ValueError(f"{labels_json} field 'tests' must be a JSON object")
-
-    part_labels = {}
-    for raw_code, raw_label in raw_part_labels.items():
-        code = canonical_loinc_code(raw_code, "part")
-        if not code:
-            raise ValueError(
-                f"{labels_json} field 'parts' contains an invalid key: {raw_code!r}"
-            )
-        if raw_label is not None and not isinstance(raw_label, str):
-            raise ValueError(
-                f"{labels_json} label for Part {code} must be a string or null"
-            )
-        part_labels[code] = str(raw_label or "").strip()
-
-    test_labels = {}
-    for raw_code, raw_label in raw_test_labels.items():
-        code = canonical_loinc_code(raw_code, "term")
-        if not code:
-            raise ValueError(
-                f"{labels_json} field 'tests' contains an invalid key: {raw_code!r}"
-            )
-        if raw_label is not None and not isinstance(raw_label, str):
-            raise ValueError(
-                f"{labels_json} label for Term {code} must be a string or null"
-            )
-        test_labels[code] = str(raw_label or "").strip()
-
     relevant_rows = [
         row
         for row in map_rows
@@ -2001,7 +2141,7 @@ def process_loinc_mappings(
         for part in used_parts
         for term in part_tests.get(part, [])
     }
-    missing_term_labels = sorted(used_terms - set(test_labels))
+    missing_term_labels = sorted(used_terms - set(term_labels))
     if missing_part_mappings or missing_part_labels or missing_term_labels:
         details = []
         if missing_part_mappings:
@@ -2024,15 +2164,16 @@ def process_loinc_mappings(
             + "\n  ".join(details)
         )
 
-    # Small local schema used to organize the imported LOINC classes.
+    # Small local schema used to organize the imported LOINC classes. Reuse
+    # CompLOINC's COMPONENT predicate instead of minting a MAKAAO predicate.
     g.add((MAKAAO.LoincPart, RDF.type, OWL.Class))
     g.add((MAKAAO.LoincPart, RDFS.label, Literal("LOINC Part", lang="en")))
     g.add((MAKAAO.LoincTerm, RDF.type, OWL.Class))
     g.add((MAKAAO.LoincTerm, RDFS.label, Literal("LOINC Term", lang="en")))
-    g.add((MAKAAO.hasLoincComponent, RDF.type, OWL.ObjectProperty))
-    g.add((MAKAAO.hasLoincComponent, RDFS.label, Literal("has LOINC component", lang="en")))
-    g.add((MAKAAO.hasLoincComponent, RDFS.domain, MAKAAO.LoincTerm))
-    g.add((MAKAAO.hasLoincComponent, RDFS.range, MAKAAO.LoincPart))
+    g.add((LOINC_COMPONENT, RDF.type, OWL.ObjectProperty))
+    g.add((LOINC_COMPONENT, RDFS.label, Literal("has LOINC component", lang="en")))
+    g.add((LOINC_COMPONENT, RDFS.domain, MAKAAO.LoincTerm))
+    g.add((LOINC_COMPONENT, RDFS.range, MAKAAO.LoincPart))
 
     seen_parts = set()
     seen_terms = set()
@@ -2070,7 +2211,7 @@ def process_loinc_mappings(
         for test_code in part_tests.get(part_code, []):
             term_cls = MAKAAO_LOINC[test_code]
             term_inst = MAKAAO[f"loinc_{make_valid(test_code)}_instance"]
-            term_label = test_labels.get(test_code) or test_code
+            term_label = term_labels.get(test_code) or test_code
 
             if test_code not in seen_terms:
                 seen_terms.add(test_code)
@@ -2086,13 +2227,11 @@ def process_loinc_mappings(
                 add_pref(g, term_inst, term_label)
 
             # Relate the LOINC Term individual to the LOINC Part individual.
-            g.add((term_inst, MAKAAO.hasLoincComponent, part_inst))
+            g.add((term_inst, LOINC_COMPONENT, part_inst))
 
     print(
         f"Loaded LOINC classes and instances — Parts:{len(seen_parts)} Terms:{len(seen_terms)}"
     )
-
-# def process_snomed_mappings : that was a function to add matches from a files with matches automatically found between SNOMED and our AAb, but it is now removed
 
 def set_output_file_metadata(graph: Graph, output_name: str) -> URIRef:
     """Set file-specific DCAT distribution metadata and an exact VoID count.
@@ -2235,7 +2374,7 @@ def append_fair_metadata(kg: Graph):
     team_alpha = URIRef("https://heka.gitlabpages.inria.fr/")
     team_beta = URIRef("https://www.institutimagine.org/en")
     for team_uri, team_label in [
-        (team_alpha, "Team HeKA, Inria Paris"),
+        (team_alpha, "Team HeKA"),
         (team_beta, "Institut Imagine, Inserm"),
     ]:
         kg.add((ONT, DCTERMS.contributor, team_uri))
@@ -2258,7 +2397,6 @@ def append_fair_metadata(kg: Graph):
         )
     )
     kg.add((ONT, OWL.versionInfo, Literal(version)))
-    #kg.add((ONT, OWL.imports, URIRef("http://purl.obolibrary.org/obo/ro.owl")))
     kg.add((ONT, VOID.uriSpace, Literal("http://makaao.inria.fr/kg/")))
     kg.add((ONT, SCHEMA.name, Literal("MAKAAO Knowledge Graph", lang="en")))
     kg.add(
@@ -2280,7 +2418,7 @@ def append_fair_metadata(kg: Graph):
 
     VCARD = Namespace("http://www.w3.org/2006/vcard/ns#")
 
-    CONTACT = URIRef("http://makaao.inria.fr/kg/contact")
+    CONTACT = URIRef("http://makaao.inria.fr/kg/contact.html")
 
     kg.add((ONT, DCAT.contactPoint, CONTACT))
     kg.add((CONTACT, RDF.type, VCARD.Organization))
@@ -2291,8 +2429,6 @@ def append_fair_metadata(kg: Graph):
             URIRef("mailto:contact.makaao@inria.fr"),
         )
     )
-    set_output_file_metadata(kg, Path(OUTPUT_OWL_ENRICHED).name)
-
 # ===================== T-BOX EXPORT =====================
 
 _TBOX_ONTOLOGY_HEADER_PREDICATES = {
@@ -2345,7 +2481,8 @@ def extract_tbox(source: Graph, local_ns: str) -> Graph:
       - schema terms defined in the MAKAAO namespace;
       - generated LOINC Part and Term classes that are direct subclasses of
         makaao:LoincPart or makaao:LoincTerm;
-      - the local makaao:hasLoincComponent object-property schema;
+      - the reused loinc_property:COMPONENT object-property schema;
+      - local positivity classes and their direct HPO close-match mappings;
       - recursively reachable blank-node structures, such as OWL restrictions.
 
     Excluded:
@@ -2385,9 +2522,15 @@ def extract_tbox(source: Graph, local_ns: str) -> Graph:
         ):
             seeds.add(external_cls)
 
+    # Retain used ChEBI classes explicitly exposed by build_core(). Their source
+    # hierarchy is still supplied by the imported ChEBI reasoning module.
+    for external_cls in source.subjects(RDF.type, OWL.Class):
+        if _is_chebi_class(external_cls):
+            seeds.add(external_cls)
+
     # Retain the property used to relate LOINC Term and Part individuals.
-    if (MAKAAO.hasLoincComponent, RDF.type, OWL.ObjectProperty) in source:
-        seeds.add(MAKAAO.hasLoincComponent)
+    if (LOINC_COMPONENT, RDF.type, OWL.ObjectProperty) in source:
+        seeds.add(LOINC_COMPONENT)
 
     ontology_headers = {
         subject
@@ -2527,7 +2670,7 @@ def write_root_reasoning_catalog(stage_root: Path, reasoning_result: dict) -> Pa
             f"expected={sorted(module_iris)}, actual={sorted(map(str, module_names))}"
         )
 
-    catalog_path = stage_root / "catalog-v001.xml"
+    catalog_path = stage_root / "catalog-imports.xml"
     root = ET.Element(
         "catalog",
         {
@@ -2632,7 +2775,6 @@ def _robot_command():
 
     candidates = [
         Path(ROBOT_JAR),
-        PROJECT_DIR / "tools" / "robot.jar",
         PROJECT_DIR / "kg" / "robot.jar",
         KG_DIR / "robot.jar",
         PROJECT_DIR / "robot.jar",
@@ -2682,7 +2824,6 @@ def validate_build_prerequisites() -> None:
         Path(REASONING_RELEASE_BUILDER),
         Path(ORPHA_UMLS_MAPPINGS_JSON),
         Path(LOINC_PART_TEST_JSON),
-        Path(LOINC_LABELS_JSON),
         Path(LOINC_INDEX_CSV),
         *(Path(path) for path in EXTERNAL_ONTOLOGY_FILES.values()),
         Path(SKOS_SOURCE_FILE),
@@ -2985,7 +3126,7 @@ def main():
         )
         #print(orpha_hpo_links)
     
-        # Names read from code_names.csv: a file obtained by querying UMLS for english names of our concepts of interest (targets, diseases...)
+        # Names read from code_names.csv, including LOINC Parts and Terms.
         if os.path.exists(CODE_NAMES_CSV):
             up_names, up_urls = read_code_names_uniprot(
                 CODE_NAMES_CSV
@@ -2994,6 +3135,7 @@ def main():
             umls_cn_names, umls_cn_urls = read_code_names_umls(
                 CODE_NAMES_CSV
             )  # dictinoary: {CUI: english_name} (CUIs of differnt concept sof interest: targets, diseases...)
+            umls_synonyms = read_code_names_umls_synonyms(CODE_NAMES_CSV)
             hpo_cn_names, _ = read_code_names_hpo(
                 CODE_NAMES_CSV
             )  # dict: {HP:nnnnnnn: english_name}
@@ -3003,22 +3145,29 @@ def main():
             chebi_cn_names, chebi_cn_urls = read_code_names_chebi(
                 CODE_NAMES_CSV
             )  # 2 dictionaries: {chebi_id: english_name} and {chebi_id: chebi_url}
+            loinc_part_names, loinc_term_names = read_code_names_loinc(
+                CODE_NAMES_CSV
+            )
             print(
                 "Loaded names — "
                 f"UniProt:{len(up_names)} "
                 f"UMLS:{len(umls_cn_names)} "
                 f"HPO:{len(hpo_cn_names)} "
                 f"ORPHA:{len(orpha_cn_names)} "
-                f"ChEBI:{len(chebi_cn_names)}"
+                f"ChEBI:{len(chebi_cn_names)} "
+                f"LOINC Parts:{len(loinc_part_names)} "
+                f"LOINC Terms:{len(loinc_term_names)}"
             )
         else:
             up_names, up_urls = {}, {}
             umls_cn_names, umls_cn_urls = {}, {}
+            umls_synonyms = {}
             hpo_cn_names = {}
             orpha_cn_names, orpha_cn_urls = {}, {}
             chebi_cn_names, chebi_cn_urls = {}, {}
+            loinc_part_names, loinc_term_names = {}, {}
             print(
-                f"WARN: {CODE_NAMES_CSV} not found; labels may fall back to codes."
+                f"WARN: {CODE_NAMES_CSV} not found; no enrichment labels were loaded."
             )  # if code_names file not found, just diplay a warning
     
         # "data" is a dict where keys are column names, and values are also dict containing: different things, but they keys is alwaus aab_id. the values might be a list containing for ex [target,source]
@@ -3042,7 +3191,7 @@ def main():
         )
     
         # this function call add AAb with their class hierarchy, and their positivity phenotypes. It also add their targets (UMLS, CHebi, or Uniprot), instantiate all these things and link them together as needed
-        build_core(
+        positivity_instances_by_hpo = build_core(
             g,
             data,
             up_names,
@@ -3052,6 +3201,7 @@ def main():
             hpo_cn_names,
             chebi_cn_names,
             chebi_cn_urls,
+            umls_synonyms=umls_synonyms,
         )
     
         # this function call add diseases linked to AAbs, instantiate them and link them to AAb instances. Diseases can be Orphanet diseases (preferred) or UMLS CUIs (with possible SNOMED mappings)
@@ -3059,12 +3209,20 @@ def main():
             g,
             data,
             orpha_hpo_links,
+            positivity_instances_by_hpo,
             umls_cn_names,
             umls_cn_urls,
             hpo_cn_names,
+            umls_synonyms=umls_synonyms,
         )
         keep = data["indices"]
-        process_loinc_mappings(g, LOINC_INDEX_CSV, keep)
+        process_loinc_mappings(
+            g,
+            LOINC_INDEX_CSV,
+            keep,
+            loinc_part_names,
+            loinc_term_names,
+        )
 
         orpha_umls_triples_added = add_orpha_umls_close_matches(
             g,
@@ -3072,6 +3230,7 @@ def main():
             umls_names=umls_cn_names,
             umls_urls=umls_cn_urls,
             orpha_names=orpha_cn_names,
+            umls_synonyms=umls_synonyms,
         )
         print(
             "ORPHA/UMLS closeMatch enrichment: "
@@ -3085,24 +3244,22 @@ def main():
         # every input-derived and metadata enrichment step, immediately before
         # final validation, TBox extraction, serialization, and reasoning.
         label_collision_rows = add_label_collision_close_matches(g)
-        unexpected_decisions = [
-            row for row in label_collision_rows if row["decision"] != "linked"
-        ]
-        if unexpected_decisions:
-            raise RuntimeError(
-                "Restricted class-label audit produced a non-linked decision"
-            )
-        linked_label_pairs = len(label_collision_rows)
+        linked_label_pairs = sum(
+            1 for row in label_collision_rows if row["decision"] == "linked"
+        )
         label_close_match_triples_added = sum(
             int(row["close_match_triples_added"]) for row in label_collision_rows
         )
         print(
-            "Class-label exact-match audit "
-            "(UMLS↔UniProt; autoantibody↔LOINC Part; ORDO disease↔UMLS only): "
+            "Class-label collision audit: "
             f"candidate_pairs={len(label_collision_rows)} "
             f"linked_pairs={linked_label_pairs} "
             f"closeMatch_triples_added={label_close_match_triples_added}"
         )
+
+        # Set file-level metadata only after the last graph-mutating audit so
+        # void:triples records the final provenance-bearing KG size.
+        set_output_file_metadata(g, Path(OUTPUT_OWL_ENRICHED).name)
 
         labelled_cui_resources = validate_local_cui_labels(g)
         print(f"Local UMLS resources with labels: {labelled_cui_resources}")
@@ -3162,7 +3319,7 @@ def main():
             {
                 stage_kg.name,
                 stage_tbox.name,
-                "catalog-v001.xml",
+                "catalog-imports.xml",
                 REASONING_OUTPUT_DIRNAME,
             },
         )
