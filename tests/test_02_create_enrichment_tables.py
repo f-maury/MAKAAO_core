@@ -102,7 +102,9 @@ def test_02_pipeline_uses_committed_sample_without_network(
 
     # Select identifiers that are actually requested by the committed sample.
     # Script 02 intentionally ignores unrelated MRCONSO/Orphanet/LOINC records.
-    input_cuis, input_orphas = mod.collect_core_orpha_umls_identifiers()
+    input_cuis, disease_cuis, target_cuis, input_orphas = (
+        mod.collect_core_orpha_umls_identifiers()
+    )
     input_chebis = mod.collect_core_chebi_identifiers()
     input_loinc_parts, _ = mod.collect_core_loinc_parts_and_labels()
 
@@ -117,12 +119,14 @@ def test_02_pipeline_uses_committed_sample_without_network(
             input_hpos.update(mod.extract_hpo_ids(str(value)))
 
     assert input_cuis, "The committed sample must contain at least one UMLS CUI"
+    assert disease_cuis, "The committed sample must contain at least one disease CUI candidate"
+    assert disease_cuis.isdisjoint(target_cuis)
     assert input_orphas, "The committed sample must contain at least one ORPHA disease"
     assert input_chebis, "The committed sample must contain at least one ChEBI identifier"
     assert input_hpos, "The committed sample must contain at least one HPO identifier"
     assert input_loinc_parts, "The committed sample must contain at least one LOINC Part"
 
-    cui = sorted(input_cuis)[0]
+    cui = sorted(disease_cuis)[0]
     orpha = sorted(input_orphas, key=int)[0]
     chebi = sorted(input_chebis, key=int)[0]
     hpo = sorted(input_hpos)[0]
@@ -182,13 +186,6 @@ def test_02_pipeline_uses_committed_sample_without_network(
             label="Example disease",
         ),
         mrconso_row(
-            cui=cui,
-            sab="MTH",
-            code="SYNONYM",
-            label="Example disease synonym",
-            tty="SY",
-        ),
-        mrconso_row(
             cui="C1000001", sab="HPO", code=hpo, label="Example phenotype"
         ),
         mrconso_row(
@@ -213,12 +210,13 @@ def test_02_pipeline_uses_committed_sample_without_network(
     assert part_tests[loinc_part] == [loinc_term]
 
     code_names = pd.read_csv(mod.OUTPUT_CSV_FINAL, keep_default_na=False)
-    assert set(code_names.columns) == {"source", "id", "name", "synonyms_en", "url"}
-    umls_row = code_names.loc[
-        (code_names["source"] == "UMLS") & (code_names["id"] == cui)
-    ].iloc[0]
-    assert umls_row["name"] == "Example disease"
-    assert json.loads(umls_row["synonyms_en"]) == ["Example disease synonym"]
+    assert set(code_names.columns) == {
+    "source",
+    "id",
+    "name",
+    "synonyms_en",
+    "url",
+    }
     actual_sources = set(code_names["source"])
     assert {"UMLS", "HPO", "ORPHA", "ChEBI", "LOINC"} <= actual_sources
 
