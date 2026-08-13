@@ -4,6 +4,7 @@
 @prefix owl:     <http://www.w3.org/2002/07/owl#> .
 @prefix skos:    <http://www.w3.org/2004/02/skos/core#> .
 @prefix prov:    <http://www.w3.org/ns/prov#> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
 @prefix xsd:     <http://www.w3.org/2001/XMLSchema#> .
 @prefix bao:     <http://www.bioassayontology.org/bao#> .
 @prefix sio:     <http://semanticscience.org/resource/> .
@@ -88,12 +89,23 @@ makaao:DocumentShape
     a sh:NodeShape ;
     sh:targetClass makaao:Document ;
     sh:nodeKind sh:IRI ;
-    sh:property [
-        sh:path rdfs:seeAlso ;
-        sh:minCount 1 ;
-        sh:nodeKind sh:IRI ;
-        sh:message "Every Document must identify its external source with rdfs:seeAlso." ;
-    ] ;
+    sh:or (
+        [
+            sh:property [
+                sh:path rdfs:seeAlso ;
+                sh:minCount 1 ;
+                sh:nodeKind sh:IRI ;
+            ]
+        ]
+        [
+            sh:property [
+                sh:path dcterms:identifier ;
+                sh:minCount 1 ;
+                sh:nodeKind sh:Literal ;
+            ]
+        ]
+    ) ;
+    sh:message "Every Document must identify its source with rdfs:seeAlso or dcterms:identifier." ;
     sh:sparql [
         a sh:SPARQLConstraint ;
         sh:severity sh:Warning ;
