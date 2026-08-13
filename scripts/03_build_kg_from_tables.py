@@ -26,8 +26,8 @@ SCRIPT_VERSION = "1.2.31"
 SCRIPT_ITERATION = "2026-08-11-deterministic-reification-and-symmetric-provenance"
 
 # The dataset version is independent of the Python script version.
-#KG_VERSION = "1.0.4test"  # from makaao_core_29-07-2026.xlsx
-KG_VERSION = "sample"  # from makaao_sample.csv
+KG_VERSION = "1.0.4"  # from makaao_core_29-07-2026.xlsx
+#KG_VERSION = "sample"  # from makaao_sample.csv
 version = KG_VERSION  # retained for compatibility with the existing code
 
 # ===================== HARDCODED CONFIG =====================
@@ -60,8 +60,8 @@ KG_DIR = (PROJECT_DIR / "kg").resolve()
 
 BASE_DIR = str(DATA_DIR / "processed_tables")
 OUTPUT_DIR = str(DATA_DIR)
-#makaao_core_name = str(DATA_DIR / "makaao_core.csv")
-makaao_core_name = str(DATA_DIR / "makaao_sample.csv")
+makaao_core_name = str(DATA_DIR / "makaao_core.csv")
+#makaao_core_name = str(DATA_DIR / "makaao_sample.csv")
 OUTPUT_OWL_ENRICHED = str(KG_DIR / f"makaao_kg_{version}.rdf")
 OUTPUT_OWL_TBOX = str(KG_DIR / f"makaao_kg_{version}_ontology.owl")
 

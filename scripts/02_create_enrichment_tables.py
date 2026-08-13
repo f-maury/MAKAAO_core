@@ -41,8 +41,7 @@ DATA_DIR = str(PROJECT_DIR / "data")
 IN_PATH = "/mnt/d/umls-2024AB-full_metamor/2024AB-full/2024AB/2024AB/META/MRCONSO.RRF"
 XML_PATH = os.path.join(DATA_DIR, "en_product4.xml")
 ENRICH_DIR = os.path.join(DATA_DIR, "enrichment_tables")
-#INPUT_CSV_CORE = os.path.join(DATA_DIR, "makaao_core.csv")
-INPUT_CSV_CORE = os.path.join(DATA_DIR, "makaao_sample.csv")
+INPUT_CSV_CORE = os.path.join(DATA_DIR, "makaao_core.csv")
 LOINC_PART_LINK_CSV = os.path.join(DATA_DIR, "LoincPartLink_Primary.csv")
 
 # Any English, unsuppressed MRCONSO atom may provide a label for a UMLS CUI.
@@ -111,12 +110,14 @@ while True:
 # --- PART 1: PROCESS MRCONSO.RRF (Direct to Memory) ---
 def process_mrconso(
     input_cuis: set[str],
+    mapping_cuis: set[str],
+    target_cuis: set[str],
     input_orphas: set[str],
     required_hpo_ids: set[str],
     required_loinc_parts: set[str],
     required_loinc_terms: set[str],
 ) -> None:
-    """Scan MRCONSO once for relevant labels and ORPHA↔UMLS mappings."""
+    """Scan MRCONSO once for relevant labels and disease-only ORPHA↔UMLS mappings."""
     print(f"Processing MRCONSO.RRF from {IN_PATH}...")
     if not os.path.isfile(IN_PATH):
         raise FileNotFoundError(f"Required MRCONSO.RRF not found: {IN_PATH}")
@@ -164,10 +165,16 @@ def process_mrconso(
 
             cui = norm_umls(cui_raw)
 
-            # Mapping extraction is independent of language and label selection.
+            # ORPHA/UMLS mappings are disease mappings. CUIs used as targets are
+            # never eligible, even when reached from an explicit input ORPHA code.
             if suppress == "N" and sab.upper() in UMLS_MAPPING_SABS:
                 orpha = orpha_code_from_mrconso_atom(code, scui, sdui)
-                if cui and orpha and (cui in input_cuis or orpha in input_orphas):
+                if (
+                    cui
+                    and orpha
+                    and cui not in target_cuis
+                    and (cui in mapping_cuis or orpha in input_orphas)
+                ):
                     orpha_to_umls[orpha].add(cui)
                     umls_to_orpha[cui].add(orpha)
                     mapping_rows += 1
@@ -280,24 +287,31 @@ def process_mrconso(
     for loinc_code, cand in best_loinc_terms.items():
         loinc_term_names_map[loinc_code] = cand[5]
 
+    mapped_target_cuis = set(target_cuis) & set(umls_to_orpha)
+    if mapped_target_cuis:
+        raise RuntimeError(
+            "ORPHA/UMLS disease mapping unexpectedly contains target CUI(s): "
+            + ", ".join(sorted(mapped_target_cuis))
+        )
+
     write_orpha_umls_mappings(
         OUT_ORPHA_UMLS_MAPPINGS,
-        input_cuis,
+        mapping_cuis,
         input_orphas,
         orpha_to_umls,
         umls_to_orpha,
     )
     mapping_pair_count = sum(len(values) for values in orpha_to_umls.values())
     mapped_input_orphas = set(input_orphas) & set(orpha_to_umls)
-    mapped_input_cuis = set(input_cuis) & set(umls_to_orpha)
+    mapped_input_cuis = set(mapping_cuis) & set(umls_to_orpha)
     unmapped_input_orphas = set(input_orphas) - set(orpha_to_umls)
     additional_orphas = set(orpha_to_umls) - set(input_orphas)
     print(
         f"Part 1: Wrote {mapping_pair_count} ORPHA/UMLS pairs to "
         f"{OUT_ORPHA_UMLS_MAPPINGS} "
         f"({len(mapped_input_orphas)}/{len(input_orphas)} input ORPHA codes mapped; "
-        f"{len(mapped_input_cuis)}/{len(input_cuis)} input CUIs mapped; "
-        f"{len(additional_orphas)} additional ORPHA counterparts discovered from input CUIs; "
+        f"{len(mapped_input_cuis)}/{len(mapping_cuis)} disease CUI candidates mapped; "
+        f"{len(additional_orphas)} additional ORPHA counterparts discovered from disease CUI candidates; "
         f"{len(unmapped_input_orphas)} input ORPHA codes unmapped)."
     )
     print(
@@ -510,9 +524,9 @@ def orpha_code_from_mrconso_atom(*values: str) -> Optional[str]:
     return None
 
 
-def collect_core_orpha_umls_identifiers() -> Tuple[set, set]:
-    """Collect CUIs and explicit Orphanet codes from the MAKAAO core CSV."""
-    cuis, orphas = set(), set()
+def collect_core_orpha_umls_identifiers() -> Tuple[set, set, set, set]:
+    """Collect all, disease, and target CUIs plus explicit Orphanet disease codes."""
+    all_cuis, disease_cuis, target_cuis, orphas = set(), set(), set(), set()
     if not os.path.isfile(INPUT_CSV_CORE):
         raise FileNotFoundError(f"Required core input not found: {INPUT_CSV_CORE}")
 
@@ -528,22 +542,28 @@ def collect_core_orpha_umls_identifiers() -> Tuple[set, set]:
                 for token in split_items(row.get(cols["umls_id"], "")):
                     cui = norm_umls(token)
                     if cui:
-                        cuis.add(cui)
+                        all_cuis.add(cui)
+                        target_cuis.add(cui)
             if "disease_id" in cols:
                 for token in split_items(row.get(cols["disease_id"], "")):
                     cui = norm_umls(token)
                     if cui:
-                        cuis.add(cui)
+                        all_cuis.add(cui)
+                        disease_cuis.add(cui)
                         continue
                     orpha = norm_orpha(token)
                     if orpha:
                         orphas.add(orpha)
 
+    eligible_disease_cuis = disease_cuis - target_cuis
     print(
-        "Part 1: Core identifiers for ORPHA/UMLS mapping — "
-        f"CUIs:{len(cuis)} ORPHA:{len(orphas)}"
+        "Part 1: Core identifiers — "
+        f"UMLS labels:{len(all_cuis)} "
+        f"disease CUI candidates:{len(eligible_disease_cuis)} "
+        f"target CUIs excluded from ORPHA mapping:{len(target_cuis)} "
+        f"ORPHA:{len(orphas)}"
     )
-    return cuis, orphas
+    return all_cuis, eligible_disease_cuis, target_cuis, orphas
 
 
 def collect_core_chebi_identifiers() -> set[str]:
@@ -1428,7 +1448,9 @@ def main():
     reset_global_state()
     validate_required_inputs()
 
-    input_cuis, input_orphas = collect_core_orpha_umls_identifiers()
+    input_cuis, mapping_cuis, target_cuis, input_orphas = (
+        collect_core_orpha_umls_identifiers()
+    )
     input_loinc_parts, core_loinc_part_labels = collect_core_loinc_parts_and_labels()
     (
         loinc_part_tests,
@@ -1454,6 +1476,8 @@ def main():
 
     process_mrconso(
         input_cuis,
+        mapping_cuis,
+        target_cuis,
         input_orphas,
         orphanet_hpo_ids | core_hpo_ids,
         input_loinc_parts,
