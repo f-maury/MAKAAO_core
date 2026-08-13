@@ -141,6 +141,14 @@ def test_synthetic_processed_table_components_metadata_and_tbox(
     ]
 
     graph = mod.init_graph()
+    assert (
+        mod.MAKAAO.Autoantibody,
+        RDFS.subClassOf,
+        mod.BIOLINK.ChemicalEntityOrGeneOrGeneProduct,
+    ) in graph
+    assert not list(graph.triples((mod.MAKAAO.BiomolecularEntity, None, None)))
+    assert not list(graph.triples((None, None, mod.MAKAAO.BiomolecularEntity)))
+
     positivity_instances_by_hpo = mod.build_core(
         graph,
         data,
@@ -187,6 +195,17 @@ def test_synthetic_processed_table_components_metadata_and_tbox(
     )
 
     orpha_instance = mod.MAKAAO["orpha_123_instance"]
+    cui_disease_instance = mod.MAKAAO["CUI_C0000009_instance"]
+    free_disease_instance = mod.MAKAAO[f"{mod.safe_local_fragment('FREE DISEASE', prefix='disease')}_instance"]
+    assert (ordo, RDFS.subClassOf, mod.MAKAAO.AutoimmunityRelatedDisease) in graph
+    assert (
+        mod.MAKAAO["CUI_C0000009"],
+        RDFS.subClassOf,
+        mod.MAKAAO.AutoimmunityRelatedDisease,
+    ) in graph
+    assert (orpha_instance, RDF.type, mod.MAKAAO.AutoimmunityRelatedDisease) not in graph
+    assert (cui_disease_instance, RDF.type, mod.MAKAAO.AutoimmunityRelatedDisease) not in graph
+    assert (free_disease_instance, RDF.type, mod.MAKAAO.AutoimmunityRelatedDisease) in graph
     assert (orpha_instance, mod.SIO["SIO_001279"], positivity_instance) in graph
     assert (positivity_instance, mod.SIO["SIO_001280"], orpha_instance) in graph
     assert not list(
@@ -253,7 +272,7 @@ def test_synthetic_processed_table_components_metadata_and_tbox(
 
     tbox = mod.extract_tbox(graph, str(mod.MAKAAO))
     assert (mod.MAKAAO["aab_1"], RDF.type, OWL.Class) in tbox
-    assert (ordo, RDFS.subClassOf, mod.MAKAAO.AutoimmuneDisease) in tbox
+    assert (ordo, RDFS.subClassOf, mod.MAKAAO.AutoimmunityRelatedDisease) in tbox
     assert (restriction, RDF.type, OWL.Restriction) in tbox
     assert not list(tbox.triples((None, mod.DCAT.downloadURL, None)))
     mod.validate_tbox_export(tbox)

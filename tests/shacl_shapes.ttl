@@ -281,14 +281,14 @@ makaao:TargetShape
         sh:message "Each Target instance must be the target of at least one autoantibody." ;
     ] .
 
-makaao:AutoimmuneDiseaseShape
+makaao:AutoimmunityRelatedDiseaseShape
     a sh:NodeShape ;
-    sh:targetClass makaao:AutoimmuneDisease ;
+    sh:targetClass makaao:AutoimmunityRelatedDisease ;
     sh:property [
         sh:path rdfs:label ;
         sh:minCount 1 ;
         sh:severity sh:Warning ;
-        sh:message "An autoimmune-disease instance should have a local rdfs:label when available." ;
+        sh:message "An autoimmunity-related-disease instance should have a local rdfs:label when available." ;
     ] ;
     sh:property [
         sh:path sio:SIO_001403 ;
@@ -298,7 +298,7 @@ makaao:AutoimmuneDiseaseShape
             sh:class makaao:Autoantibody ;
         ] ;
         sh:qualifiedMinCount 1 ;
-        sh:message "Each autoimmune-disease instance must have an SIO_001403 association to at least one autoantibody instance." ;
+        sh:message "Each autoimmunity-related-disease instance must have an SIO_001403 association to at least one autoantibody instance." ;
     ] .
 
 makaao:AutoantibodyBiomarkerShape

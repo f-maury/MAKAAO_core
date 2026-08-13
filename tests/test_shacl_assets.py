@@ -36,7 +36,7 @@ def test_all_embedded_shacl_sparql_queries_parse():
         MAKAAO.BiomarkerReverseInverseShape,
         MAKAAO.AutoantibodyBiomarkerShape,
         MAKAAO.PositivityHasBiomarkerShape,
-        MAKAAO.AutoimmuneDiseaseShape,
+        MAKAAO.AutoimmunityRelatedDiseaseShape,
         MAKAAO.TargetShape,
     }
     assert required_shapes <= set(shapes.subjects(RDF.type, SH.NodeShape))

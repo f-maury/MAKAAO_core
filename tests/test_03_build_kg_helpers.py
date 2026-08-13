@@ -120,7 +120,7 @@ def test_exact_label_audit_links_only_permitted_pairs_and_reports_the_rest(
 
     ordo = URIRef("http://www.orpha.net/ORDO/Orphanet_123")
     cui_disease = mod.MAKAAO["CUI_C0000002"]
-    add_class(graph, ordo, "Disease Z", mod.MAKAAO.AutoimmuneDisease)
+    add_class(graph, ordo, "Disease Z", mod.MAKAAO.AutoimmunityRelatedDisease)
     add_class(graph, cui_disease, "disease z", mod.MAKAAO.CUI)
 
     # Exact collisions in prohibited combinations must never become candidates.
@@ -193,7 +193,7 @@ def test_exact_label_audit_excludes_all_other_kind_combinations(mod):
         graph,
         resources["ordo_disease"],
         shared_label,
-        mod.MAKAAO.AutoimmuneDisease,
+        mod.MAKAAO.AutoimmunityRelatedDisease,
     )
     add_class(graph, resources["hpo"], shared_label)
     add_class(graph, resources["chebi"], shared_label)
@@ -270,7 +270,7 @@ def test_existing_unapproved_mapping_is_preserved_but_not_justified_by_label(mod
     graph = fresh_graph(mod)
     ordo = URIRef("http://www.orpha.net/ORDO/Orphanet_999")
     cui = mod.MAKAAO["CUI_C0000999"]
-    add_class(graph, ordo, "Example disease", mod.MAKAAO.AutoimmuneDisease)
+    add_class(graph, ordo, "Example disease", mod.MAKAAO.AutoimmunityRelatedDisease)
     add_class(graph, cui, "example disease", mod.MAKAAO.CUI)
     graph.add((ordo, SKOS.closeMatch, cui))
     graph.add((cui, SKOS.closeMatch, ordo))

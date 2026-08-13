@@ -56,8 +56,8 @@ def build_fixture() -> Graph:
     graph.add((autoantibody, BIOLINK.biomarker_for, phenotype))
     graph.add((autoantibody, BAO.BAO_0000211, target))
 
-    graph.add((disease, RDF.type, MAKAAO.AutoimmuneDisease))
-    graph.add((disease, RDFS.label, Literal("Test autoimmune disease")))
+    graph.add((disease, RDF.type, MAKAAO.AutoimmunityRelatedDisease))
+    graph.add((disease, RDFS.label, Literal("Test autoimmunity-related disease")))
     graph.add((disease, SIO.SIO_001403, autoantibody))
     graph.add((autoantibody, SIO.SIO_001403, disease))
 
@@ -107,7 +107,7 @@ def assert_fixture_exercises_shapes(graph: Graph) -> None:
         "biomarker for": (None, BIOLINK.biomarker_for, None),
         "has biomarker": (None, BIOLINK.has_biomarker, None),
         "target instance": (None, RDF.type, MAKAAO.Target),
-        "disease instance": (None, RDF.type, MAKAAO.AutoimmuneDisease),
+        "disease instance": (None, RDF.type, MAKAAO.AutoimmunityRelatedDisease),
         "autoantibody subclass": (None, RDFS.subClassOf, MAKAAO.Autoantibody),
         "positivity subclass": (
             None,

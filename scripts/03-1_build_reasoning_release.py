@@ -40,8 +40,8 @@ from rdflib import BNode, Graph, Literal, Namespace, RDF, RDFS, OWL, URIRef
 from rdflib.namespace import DCTERMS, SKOS, XSD
 
 
-SCRIPT_VERSION = "1.2.29"
-SCRIPT_ITERATION = "2026-08-05-add-ordo-umls-exact-label-matches"
+SCRIPT_VERSION = "1.2.31"
+SCRIPT_ITERATION = "2026-08-11-deterministic-reification-and-symmetric-provenance"
 
 PROV = Namespace("http://www.w3.org/ns/prov#")
 BIOLINK = Namespace("https://w3id.org/biolink/vocab/")

@@ -22,8 +22,8 @@ from rdflib.namespace import XSD
 from datetime import date
 
 # ===================== SCRIPT VERSION =====================
-SCRIPT_VERSION = "1.2.29"
-SCRIPT_ITERATION = "2026-08-10-chebi-target-mappings-and-umls-altlabels"
+SCRIPT_VERSION = "1.2.31"
+SCRIPT_ITERATION = "2026-08-11-deterministic-reification-and-symmetric-provenance"
 
 # The dataset version is independent of the Python script version.
 #KG_VERSION = "1.0.4test"  # from makaao_core_29-07-2026.xlsx
@@ -69,6 +69,7 @@ OUTPUT_OWL_TBOX = str(KG_DIR / f"makaao_kg_{version}_ontology.owl")
 ORPHANET_HPO_LINKS = str(DATA_DIR / "enrichment_tables" / "orphanet_hpo_links.csv")
 LOINC_INDEX_CSV = str(DATA_DIR / "processed_tables" / "index_loinc.csv")
 LOINC_PART_TEST_JSON = str(DATA_DIR / "enrichment_tables" / "loinc_part_test_dict.json")
+LOINC_PART_LINK_CSV = str(DATA_DIR / "LoincPartLink_Primary.csv")
 CODE_NAMES_CSV = str(DATA_DIR / "enrichment_tables" / "code_names.csv")
 ORPHA_UMLS_MAPPINGS_JSON = str(
     DATA_DIR / "enrichment_tables" / "orpha_umls_mappings.json"
@@ -139,7 +140,15 @@ EXTERNAL_IMPORT_IRIS = (
 LOINC = Namespace("https://loinc.org/")
 LOINC_PROPERTY = Namespace("http://loinc.org/property/")
 LOINC_COMPONENT = LOINC_PROPERTY["COMPONENT"]
-MAKAAO_LOINC = Namespace("http://makaao.inria.fr/loinc/")
+MAKAAO_LOINC = Namespace("http://makaao.inria.fr/kg/loinc_")
+REIFIABLE_RELATION_PREDICATES = {
+    BAO_HAS_TARGET,
+    BAO_IS_TARGET_FOR,
+    SIO["SIO_001403"],
+    SIO["SIO_001279"],
+    SIO["SIO_001280"],
+    LOINC_COMPONENT,
+}
 
 DCTERMS = Namespace("http://purl.org/dc/terms/")
 DCAT = Namespace("http://www.w3.org/ns/dcat#")
@@ -152,7 +161,6 @@ HPO_AUTOIMMUNE_ANTIBODY_POSITIVITY = HP["HP_0030057"]
 LABEL_COLLISION_REPORT_FILENAME = "class-label-close-match-report.tsv"
 
 # ===================== GLOBALS =====================
-relation_counter = 0
 document_map = {}
 GLOBAL_ACTIVITY = None
 
@@ -1141,64 +1149,113 @@ def read_code_names_loinc(path):
     return part_names, term_names
 
 # ===================== REIFICATION =====================
-def add_reified_relation(g, subj, pred, obj, prov_str):
-    """
-    Reify (subj,pred,obj) once; if triple already reified, only append new prov:wasDerivedFrom.
+def _stable_hash_uri(prefix, identity):
+    """Return a deterministic MAKAAO URI derived from semantic identity."""
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    return MAKAAO[f"{prefix}_{digest}"]
+
+
+def _provenance_identity(prov_str):
+    """Return canonical provenance identity plus an optional external IRI."""
+    prov = str(prov_str or "").strip()
+    if not prov or prov.lower() == "nan":
+        return None, None, None
+    external_reference = _normalized_external_reference(prov)
+    identity = str(external_reference) if external_reference is not None else prov
+    return identity, external_reference, prov
+
+
+def deterministic_document_uri(prov_str):
+    """Return the stable local Document URI for one provenance source."""
+    identity, _, _ = _provenance_identity(prov_str)
+    if identity is None:
+        return None
+    return _stable_hash_uri("document", identity)
+
+
+def _rdf_term_identity(term):
+    """Serialize an RDF term deterministically for relation identity hashing."""
+    if isinstance(term, URIRef):
+        return {"kind": "uri", "value": str(term)}
+    if isinstance(term, Literal):
+        return {
+            "kind": "literal",
+            "value": str(term),
+            "language": term.language or "",
+            "datatype": str(term.datatype) if term.datatype is not None else "",
+        }
+    if isinstance(term, BNode):
+        raise ValueError(
+            "Deterministic reification does not accept blank-node subjects/objects; "
+            "use a named RDF resource instead."
+        )
+    return _rdf_term_identity(Literal(term))
+
+
+def deterministic_relation_uri(subj, pred, obj):
+    """Return the stable local Relation URI for one RDF assertion."""
+    payload = json.dumps(
+        [
+            _rdf_term_identity(subj),
+            _rdf_term_identity(pred),
+            _rdf_term_identity(obj),
+        ],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return _stable_hash_uri("relation", payload)
+
+
+def ensure_provenance_document(g, prov_str):
+    """Create/reuse a provenance Document whose URI is independent of encounter order."""
+    global document_map
+    identity, external_reference, prov = _provenance_identity(prov_str)
+    if identity is None:
+        return None
+    doc = document_map.get(identity)
+    if doc is None:
+        doc = _stable_hash_uri("document", identity)
+        document_map[identity] = doc
+    g.add((doc, RDF.type, MAKAAO.Document))
+    if external_reference is not None:
+        g.add((doc, RDFS.seeAlso, external_reference))
+    else:
+        # Preserve non-IRI provenance text without constructing an invalid URI.
+        g.add((doc, DCTERMS.identifier, Literal(prov)))
+    return doc
+
+
+def add_reified_relation(g, subj, pred, obj, prov_str=None, *, document=None):
+    """Reify one assertion under a deterministic URI and attach provenance.
+
+    Repeated calls for the same subject/predicate/object reuse the same relation
+    resource. ``document`` can be supplied for an already-declared source Document.
     """
     subj = ensure_uriref(subj)
-    global relation_counter, document_map, GLOBAL_ACTIVITY  # use global relation counter and document map
-    if not prov_str or str(prov_str).strip().lower() in {"", "nan"}:
-        return
-    prov = str(prov_str).strip()
-
-    # if that document is already known, reuse it
-    if prov in document_map:
-        doc = document_map[prov]
-    else:
-        doc = MAKAAO[
-            f"document_{len(document_map) + 1}"
-        ]  # otherwise we create a new instance of Document, and we construct its URI based on the number of documents already known
-        document_map[prov] = doc  # we add that new document to the document map
-        g.add((doc, RDF.type, MAKAAO.Document))
-        external_reference = _normalized_external_reference(prov)
-        if external_reference is not None:
-            g.add((doc, RDFS.seeAlso, external_reference))
-        else:
-            # Preserve non-IRI provenance text without constructing an invalid URI.
-            g.add((doc, DCTERMS.identifier, Literal(prov)))
-
-    # check if the object of the relations is an individual or a literal, so we characterize it correctly
+    pred = ensure_uriref(pred)
     obj_node = obj if isinstance(obj, (URIRef, BNode, Literal)) else Literal(obj)
+    if pred not in REIFIABLE_RELATION_PREDICATES:
+        raise ValueError(f"Predicate is outside the MAKAAO reification policy: {pred}")
 
-    # Try to find existing Relation with same subj/pred/obj
-    existing_rel = None
-    for rel in g.subjects(RDF.subject, subj):
-        if (rel, RDF.predicate, pred) in g and (
-            rel,
-            RDF.object,
-            obj_node,
-        ) in g:  # if the relation already exist, there is nothing to do
-            existing_rel = rel
-            break
-
-    if existing_rel is None:
-        rel = MAKAAO[f"r{relation_counter}"]
-        relation_counter += 1  # if that relation does not exist yet, we create it, and increment the relation counter
-        g.add((rel, RDF.type, MAKAAO.Relation))
-        g.add((rel, RDF.type, RDF.Statement))
-        g.add(
-            (rel, RDF.subject, subj)
-        )  # we add some triples about the new reified relation
-        g.add((rel, RDF.predicate, pred))
-        g.add((rel, RDF.object, obj_node))
-        if GLOBAL_ACTIVITY is not None:
-            g.add((rel, PROV.wasGeneratedBy, GLOBAL_ACTIVITY))
+    if document is not None:
+        doc = ensure_uriref(document)
+        g.add((doc, RDF.type, MAKAAO.Document))
     else:
-        rel = existing_rel
+        doc = ensure_provenance_document(g, prov_str)
+        if doc is None:
+            return None
 
-    g.add(
-        (rel, PROV.wasDerivedFrom, doc)
-    )  # we add the provenance information to the reified relation
+    rel = deterministic_relation_uri(subj, pred, obj_node)
+    g.add((rel, RDF.type, MAKAAO.Relation))
+    g.add((rel, RDF.type, RDF.Statement))
+    g.add((rel, RDF.subject, subj))
+    g.add((rel, RDF.predicate, pred))
+    g.add((rel, RDF.object, obj_node))
+    if GLOBAL_ACTIVITY is not None:
+        g.add((rel, PROV.wasGeneratedBy, GLOBAL_ACTIVITY))
+    g.add((rel, PROV.wasDerivedFrom, doc))
+    return rel
 
 # ===================== ENRICHMENT HELPERS =====================
 
@@ -1378,7 +1435,7 @@ def add_orpha_umls_close_matches(
     for orpha, cui in mapping_pairs:
         orpha_cls = URIRef(f"http://www.orpha.net/ORDO/Orphanet_{orpha}")
         graph.add((orpha_cls, RDF.type, OWL.Class))
-        graph.add((orpha_cls, RDFS.subClassOf, MAKAAO.AutoimmuneDisease))
+        graph.add((orpha_cls, RDFS.subClassOf, MAKAAO.AutoimmunityRelatedDisease))
         cui_cls = ensure_cui_class(
             graph,
             cui,
@@ -1387,7 +1444,7 @@ def add_orpha_umls_close_matches(
             synonyms=umls_synonyms.get(cui, ()),
         )
         # ORDO and UMLS disease concepts use the same class-level MAKAAO role.
-        graph.add((cui_cls, RDFS.subClassOf, MAKAAO.AutoimmuneDisease))
+        graph.add((cui_cls, RDFS.subClassOf, MAKAAO.AutoimmunityRelatedDisease))
         for subject, obj in ((orpha_cls, cui_cls), (cui_cls, orpha_cls)):
             triple = (subject, SKOS.closeMatch, obj)
             if triple not in graph:
@@ -1398,8 +1455,7 @@ def add_orpha_umls_close_matches(
 
 # ===================== GRAPH BUILDERS =====================
 def init_graph():  # start an empty knowledge graph and add a few basic things to it
-    global relation_counter, document_map, GLOBAL_ACTIVITY, _label_seen
-    relation_counter = 0
+    global document_map, GLOBAL_ACTIVITY, _label_seen
     document_map = {}
     GLOBAL_ACTIVITY = None
     _label_seen = defaultdict(
@@ -1450,18 +1506,15 @@ def init_graph():  # start an empty knowledge graph and add a few basic things t
     g.add((MAKAAO.Document, RDFS.label, Literal("Document")))
     g.add((MAKAAO.Document, RDF.type, OWL.Class))
     g.add((MAKAAO.Document, RDFS.subClassOf, PROV.Entity))  # sublass of PROV Entity, used for reified relations that carry provenance information
-    g.add((MAKAAO.BiomolecularEntity, RDF.type, OWL.Class))
-    g.add((MAKAAO.BiomolecularEntity, RDFS.label, Literal("Biomolecular entity")))
+    g.add((MAKAAO.Autoantibody, RDF.type, OWL.Class))
+    g.add((MAKAAO.Autoantibody, RDFS.label, Literal("Autoantibody")))
     g.add(
         (
-            MAKAAO.BiomolecularEntity,
+            MAKAAO.Autoantibody,
             RDFS.subClassOf,
             BIOLINK.ChemicalEntityOrGeneOrGeneProduct,
         )
     )
-    g.add((MAKAAO.Autoantibody, RDF.type, OWL.Class))
-    g.add((MAKAAO.Autoantibody, RDFS.label, Literal("Autoantibody")))
-    g.add((MAKAAO.Autoantibody, RDFS.subClassOf, MAKAAO.BiomolecularEntity))
     g.add((MAKAAO.AutoantibodyPositivity, RDF.type, OWL.Class))
     add_pref(
         g,
@@ -1489,8 +1542,8 @@ def init_graph():  # start an empty knowledge graph and add a few basic things t
             MAKAAO.AutoantibodyPositivity,
         )
     )
-    g.add((MAKAAO.AutoimmuneDisease, RDF.type, OWL.Class))
-    g.add((MAKAAO.AutoimmuneDisease, RDFS.label, Literal("Autoimmune disease")))
+    g.add((MAKAAO.AutoimmunityRelatedDisease, RDF.type, OWL.Class))
+    g.add((MAKAAO.AutoimmunityRelatedDisease, RDFS.label, Literal("Autoimmunity-related disease")))
     g.add((MAKAAO.Target, RDF.type, OWL.Class))
     g.add((MAKAAO.Target, RDFS.label, Literal("Target")))
     g.add((MAKAAO.CUI, RDF.type, OWL.Class))
@@ -1705,14 +1758,10 @@ def build_core(
         primary_labels[idx] = pref
         add_pref(g, cls, pref)
 
-        for syn, src in data["syn_en"].get(idx, []):
-            if (
-                add_label(g, cls, RDFS.label, syn) and src
-            ):  # add english as syns as rdfs:labels, and add corresponding reified relation with provenance (if there is provenance)
-                add_reified_relation(g, cls, RDFS.label, Literal(syn), src)
-        for syn, src in data["syn_fr"].get(idx, []):  # same thing with french syns
-            if add_label(g, cls, RDFS.label, syn) and src:
-                add_reified_relation(g, cls, RDFS.label, Literal(syn), src)
+        for syn, _src in data["syn_en"].get(idx, []):
+            add_label(g, cls, RDFS.label, syn)
+        for syn, _src in data["syn_fr"].get(idx, []):  # same thing with french syns
+            add_label(g, cls, RDFS.label, syn)
 
         # taxonomy
         parents = data["parents"].get(idx) or []
@@ -1838,6 +1887,7 @@ def build_core(
             g.add((cui_uri, BAO_IS_TARGET_FOR, inst_aab))
             for p in pmids or [""]:
                 add_reified_relation(g, inst_aab, BAO_HAS_TARGET, cui_uri, p)
+                add_reified_relation(g, cui_uri, BAO_IS_TARGET_FOR, inst_aab, p)
 
     # UniProt targets
     up_names_added, up_total = 0, 0
@@ -1875,6 +1925,7 @@ def build_core(
             g.add((prot_ind, BAO_IS_TARGET_FOR, inst_aab))
             for p in pmids or [""]:
                 add_reified_relation(g, inst_aab, BAO_HAS_TARGET, prot_ind, p)
+                add_reified_relation(g, prot_ind, BAO_IS_TARGET_FOR, inst_aab, p)
     print(f"UniProt targets: named={up_names_added}/{up_total}")
 
     # ChEBI targets
@@ -1917,7 +1968,10 @@ def build_core(
             for p in pmids or [""]:
                 add_reified_relation(
                     g, inst_aab, BAO_HAS_TARGET, chebi_ind, p
-                )  # for each source we have, we add a reified relation to carry provenance
+                )
+                add_reified_relation(
+                    g, chebi_ind, BAO_IS_TARGET_FOR, inst_aab, p
+                )
 
     return {
         hpo_code: tuple(sorted(instances, key=str))
@@ -1961,7 +2015,7 @@ def process_diseases(
                 d_cls = URIRef(f"http://www.orpha.net/ORDO/Orphanet_{orpha_num}")
                 # The ORDO declaration and source hierarchy come from the
                 # imported ORDO module. This is the MAKAAO alignment axiom.
-                g.add((d_cls, RDFS.subClassOf, MAKAAO.AutoimmuneDisease))
+                g.add((d_cls, RDFS.subClassOf, MAKAAO.AutoimmunityRelatedDisease))
                 inst = MAKAAO[
                     f"orpha_{orpha_num}_instance"
                 ]  # also add instance of Orphanet class
@@ -2038,8 +2092,8 @@ def process_diseases(
                     synonyms=umls_synonyms.get(code_norm, ()),
                 )
                 # Harmonize with ORDO disease modelling: classify the concept
-                # class, not the individual, as an autoimmune disease.
-                g.add((cui_cls, RDFS.subClassOf, MAKAAO.AutoimmuneDisease))
+                # class, not the individual, as an autoimmunity-related disease.
+                g.add((cui_cls, RDFS.subClassOf, MAKAAO.AutoimmunityRelatedDisease))
 
             # Last case: if the disease value is neither an ORPHA identifier nor
             # a CUI, create only a generic local individual. Since no dedicated
@@ -2049,7 +2103,7 @@ def process_diseases(
                 fragment = safe_local_fragment(code_norm, prefix="disease")
                 inst = MAKAAO[f"{fragment}_instance"]
                 add_pref(g, inst, code_upper)
-                g.add((inst, RDF.type, MAKAAO.AutoimmuneDisease))
+                g.add((inst, RDF.type, MAKAAO.AutoimmunityRelatedDisease))
 
             if inst is None:
                 continue
@@ -2060,7 +2114,10 @@ def process_diseases(
             for p in prov or [""]:
                 add_reified_relation(
                     g, aab_inst, SIO["SIO_001403"], inst, p
-                )  # for each provenance entry, we add a reified relation to the graph, for the current instance
+                )
+                add_reified_relation(
+                    g, inst, SIO["SIO_001403"], aab_inst, p
+                )
 
 def read_required_json_object(path, description):
     """Read a required JSON object and fail on absence or malformed content."""
@@ -2227,7 +2284,15 @@ def process_loinc_mappings(
                 add_pref(g, term_inst, term_label)
 
             # Relate the LOINC Term individual to the LOINC Part individual.
+            # This structural assertion is sourced from LOINC's Primary Part Link file.
             g.add((term_inst, LOINC_COMPONENT, part_inst))
+            add_reified_relation(
+                g,
+                term_inst,
+                LOINC_COMPONENT,
+                part_inst,
+                os.path.basename(LOINC_PART_LINK_CSV),
+            )
 
     print(
         f"Loaded LOINC classes and instances — Parts:{len(seen_parts)} Terms:{len(seen_terms)}"
@@ -2313,7 +2378,7 @@ def append_fair_metadata(kg: Graph):
             ONT,
             DCTERMS.description,
             Literal(
-                "A FAIR-compliant RDF knowledge graph about autoantibodies, and autoimmune diseases",
+                "A FAIR-compliant RDF knowledge graph about autoantibodies, and autoimmunity-related diseases",
                 lang="en",
             ),
         )
@@ -2323,7 +2388,7 @@ def append_fair_metadata(kg: Graph):
         "Knowledge Graph",
         "Autoantibodies",
         "Biomedical Ontology",
-        "Autoimmune diseases",
+        "Autoimmunity-related diseases",
     ]:
         kg.add((ONT, DCTERMS.subject, Literal(term, lang="en")))
 
@@ -2411,7 +2476,7 @@ def append_fair_metadata(kg: Graph):
         (ONT, SCHEMA.license, URIRef("https://creativecommons.org/licenses/by/4.0/"))
     )
     kg.add((ONT, RDFS.seeAlso, URIRef("https://makaao.inria.fr")))
-    for kw in ["Autoantibodies", "Autoimmune diseases"]:
+    for kw in ["Autoantibodies", "Autoimmunity-related diseases"]:
         kg.add((ONT, DCAT.keyword, Literal(kw, lang="en")))
 
     from rdflib.namespace import Namespace
@@ -2824,6 +2889,7 @@ def validate_build_prerequisites() -> None:
         Path(REASONING_RELEASE_BUILDER),
         Path(ORPHA_UMLS_MAPPINGS_JSON),
         Path(LOINC_PART_TEST_JSON),
+        Path(LOINC_PART_LINK_CSV),
         Path(LOINC_INDEX_CSV),
         *(Path(path) for path in EXTERNAL_ONTOLOGY_FILES.values()),
         Path(SKOS_SOURCE_FILE),

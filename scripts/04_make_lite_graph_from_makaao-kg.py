@@ -34,11 +34,11 @@ from rdflib import BNode, Graph, Literal, Namespace, OWL, RDF, RDFS, URIRef
 from rdflib.namespace import SKOS
 
 
-SCRIPT_VERSION = "2.0.10"
+SCRIPT_VERSION = "2.0.11"
 
 # ----------------------------- Namespaces -----------------------------
 MAKAAO = Namespace("http://makaao.inria.fr/kg/")
-MAKAAO_LOINC = Namespace("http://makaao.inria.fr/loinc/")
+MAKAAO_LOINC = Namespace("http://makaao.inria.fr/kg/loinc_")
 LOINC_PROPERTY = Namespace("http://loinc.org/property/")
 OBO = Namespace("http://purl.obolibrary.org/obo/")
 UNIPROT_CORE = Namespace("http://purl.uniprot.org/core/")
@@ -59,7 +59,7 @@ GENERIC_INSTANCE_TYPES = {
     MAKAAO.Document,
     MAKAAO.Relation,
     MAKAAO.Target,
-    MAKAAO.AutoimmuneDisease,
+    MAKAAO.AutoimmunityRelatedDisease,
     MAKAAO.CUI,
 }
 
@@ -487,7 +487,7 @@ def build_lite_graph(data: Graph, schema: Graph) -> tuple[Graph, dict]:
         for rdf_type in types_by_node.get(instance, set()):
             if rdf_type in {
                 MAKAAO.Target,
-                MAKAAO.AutoimmuneDisease,
+                MAKAAO.AutoimmunityRelatedDisease,
                 MAKAAO.AutoantibodyPositivity,
             }:
                 role_by_class[class_iri].add(rdf_type)
@@ -498,9 +498,9 @@ def build_lite_graph(data: Graph, schema: Graph) -> tuple[Graph, dict]:
         if not isinstance(left, URIRef) or not isinstance(right, URIRef):
             continue
         if is_cui_class(left) and is_ordo_class(right):
-            role_by_class[left].add(MAKAAO.AutoimmuneDisease)
+            role_by_class[left].add(MAKAAO.AutoimmunityRelatedDisease)
         elif is_ordo_class(left) and is_cui_class(right):
-            role_by_class[right].add(MAKAAO.AutoimmuneDisease)
+            role_by_class[right].add(MAKAAO.AutoimmunityRelatedDisease)
 
     add_application_role_hierarchy(output, role_by_class)
     purge_excluded_resources(output)
@@ -548,10 +548,10 @@ def add_application_role_hierarchy(
             supported_roles.add(MAKAAO.Target)
 
         if (
-            MAKAAO.AutoimmuneDisease in roles
+            MAKAAO.AutoimmunityRelatedDisease in roles
             and (is_ordo_class(class_iri) or is_cui_class(class_iri))
         ):
-            supported_roles.add(MAKAAO.AutoimmuneDisease)
+            supported_roles.add(MAKAAO.AutoimmunityRelatedDisease)
 
         for parent in supported_roles:
             output.add((class_iri, RDFS.subClassOf, parent))
