@@ -40,8 +40,8 @@ from rdflib import BNode, Graph, Literal, Namespace, RDF, RDFS, OWL, URIRef
 from rdflib.namespace import DCTERMS, SKOS, XSD
 
 
-SCRIPT_VERSION = "1.2.31"
-SCRIPT_ITERATION = "2026-08-11-deterministic-reification-and-symmetric-provenance"
+SCRIPT_VERSION = "1.2.34"
+SCRIPT_ITERATION = "2026-08-15-readable-relation-source-occurrences"
 
 PROV = Namespace("http://www.w3.org/ns/prov#")
 BIOLINK = Namespace("https://w3id.org/biolink/vocab/")

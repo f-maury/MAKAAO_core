@@ -22,12 +22,12 @@ from rdflib.namespace import XSD
 from datetime import date
 
 # ===================== SCRIPT VERSION =====================
-SCRIPT_VERSION = "1.2.31"
-SCRIPT_ITERATION = "2026-08-11-deterministic-reification-and-symmetric-provenance"
+SCRIPT_VERSION = "1.2.34"
+SCRIPT_ITERATION = "2026-08-15-readable-relation-source-occurrences"
 
 # The dataset version is independent of the Python script version.
-KG_VERSION = "1.0.4"  # from makaao_core_29-07-2026.xlsx
-#KG_VERSION = "sample"  # from makaao_sample.csv
+#KG_VERSION = "1.0.5"  # full makaao_core.csv dataset
+KG_VERSION = "sample"  # public/testing makaao_sample.csv
 version = KG_VERSION  # retained for compatibility with the existing code
 
 # ===================== HARDCODED CONFIG =====================
@@ -60,8 +60,8 @@ KG_DIR = (PROJECT_DIR / "kg").resolve()
 
 BASE_DIR = str(DATA_DIR / "processed_tables")
 OUTPUT_DIR = str(DATA_DIR)
-makaao_core_name = str(DATA_DIR / "makaao_core.csv")
-#makaao_core_name = str(DATA_DIR / "makaao_sample.csv")
+#makaao_core_name = str(DATA_DIR / "makaao_core.csv")
+makaao_core_name = str(DATA_DIR / "makaao_sample.csv")
 OUTPUT_OWL_ENRICHED = str(KG_DIR / f"makaao_kg_{version}.rdf")
 OUTPUT_OWL_TBOX = str(KG_DIR / f"makaao_kg_{version}_ontology.owl")
 
@@ -74,6 +74,7 @@ CODE_NAMES_CSV = str(DATA_DIR / "enrichment_tables" / "code_names.csv")
 ORPHA_UMLS_MAPPINGS_JSON = str(
     DATA_DIR / "enrichment_tables" / "orpha_umls_mappings.json"
 )
+STRICT_AUTOIMMUNE_DISEASES_JSON = str(DATA_DIR / "dico_MAI_strict.json")
 
 
 # Pinned local OWL/RDF sources used to create minimal import modules.
@@ -162,6 +163,7 @@ LABEL_COLLISION_REPORT_FILENAME = "class-label-close-match-report.tsv"
 
 # ===================== GLOBALS =====================
 document_map = {}
+relation_occurrence_counts = defaultdict(int)
 GLOBAL_ACTIVITY = None
 
 # ---------- Label de-duplication state ----------
@@ -1165,6 +1167,36 @@ def _provenance_identity(prov_str):
     return identity, external_reference, prov
 
 
+def _provenance_values(value):
+    """Return provenance input as a flat tuple without treating strings as iterables."""
+    if value is None:
+        return ()
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return tuple(value)
+    return (value,)
+
+
+def _provenance_sort_key(value):
+    """Stable key for ordering repeated source occurrences of the same assertion."""
+    identities = []
+    for item in _provenance_values(value):
+        identity, _, _ = _provenance_identity(item)
+        if identity is not None:
+            identities.append(identity)
+    return tuple(sorted(identities))
+
+
+def _source_occurrence_sort_key(item):
+    """Stable ordering for ``(source identifier, provenance values)`` records."""
+    identifier, provenance = item
+    identifier_text = str(identifier or "").strip()
+    return (
+        identifier_text.casefold(),
+        identifier_text,
+        _provenance_sort_key(provenance),
+    )
+
+
 def deterministic_document_uri(prov_str):
     """Return the stable local Document URI for one provenance source."""
     identity, _, _ = _provenance_identity(prov_str)
@@ -1192,19 +1224,66 @@ def _rdf_term_identity(term):
     return _rdf_term_identity(Literal(term))
 
 
-def deterministic_relation_uri(subj, pred, obj):
-    """Return the stable local Relation URI for one RDF assertion."""
-    payload = json.dumps(
-        [
-            _rdf_term_identity(subj),
-            _rdf_term_identity(pred),
-            _rdf_term_identity(obj),
-        ],
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
+RELATION_PREDICATE_SLUGS = {
+    BAO_HAS_TARGET: "BAO_0000211",
+    BAO_IS_TARGET_FOR: "BAO_0000598",
+    SIO["SIO_001403"]: "SIO_001403",
+    SIO["SIO_001279"]: "SIO_001279",
+    SIO["SIO_001280"]: "SIO_001280",
+    LOINC_COMPONENT: "LOINC_COMPONENT",
+}
+
+
+def _local_relation_term_slug(term, role):
+    """Return the existing MAKAAO local fragment used in a Relation URI."""
+    if not isinstance(term, URIRef):
+        raise ValueError(
+            f"Reified relation {role} must be a named MAKAAO resource: {term!r}"
+        )
+    iri = str(term)
+    base = str(MAKAAO)
+    if not iri.startswith(base):
+        raise ValueError(
+            f"Reified relation {role} must use a MAKAAO local resource: {iri!r}"
+        )
+    slug = iri[len(base):]
+    if not slug or not re.fullmatch(r"[A-Za-z0-9._~-]+", slug):
+        raise ValueError(
+            f"Unsafe MAKAAO local fragment for reified relation {role}: {slug!r}"
+        )
+    return slug
+
+
+def _relation_uri_component(slug):
+    """Escape a readable component so ``_`` remains an unambiguous separator.
+
+    ``~`` and ``_`` are escaped injectively as ``~t`` and ``~u``. The resulting
+    component contains no underscore, so concatenated subject/predicate/object
+    components cannot collide through ambiguous boundaries.
+    """
+    return str(slug).replace("~", "~t").replace("_", "~u")
+
+
+def deterministic_relation_uri(subj, pred, obj, occurrence=1):
+    """Return collision-safe ``rel_<subject>_<predicate>_<object>_<occurrence>``."""
+    pred = ensure_uriref(pred)
+    predicate_slug = RELATION_PREDICATE_SLUGS.get(pred)
+    if predicate_slug is None:
+        raise ValueError(f"Predicate is outside the MAKAAO reification policy: {pred}")
+    if not isinstance(occurrence, int) or occurrence < 1:
+        raise ValueError(
+            f"Relation occurrence must be a positive integer, got {occurrence!r}"
+        )
+    subject_slug = _relation_uri_component(
+        _local_relation_term_slug(subj, "subject")
     )
-    return _stable_hash_uri("relation", payload)
+    predicate_slug = _relation_uri_component(predicate_slug)
+    object_slug = _relation_uri_component(
+        _local_relation_term_slug(obj, "object")
+    )
+    return MAKAAO[
+        f"rel_{subject_slug}_{predicate_slug}_{object_slug}_{occurrence}"
+    ]
 
 
 def ensure_provenance_document(g, prov_str):
@@ -1227,26 +1306,36 @@ def ensure_provenance_document(g, prov_str):
 
 
 def add_reified_relation(g, subj, pred, obj, prov_str=None, *, document=None):
-    """Reify one assertion under a deterministic URI and attach provenance.
+    """Reify one recorded occurrence of an assertion and attach provenance.
 
-    Repeated calls for the same subject/predicate/object reuse the same relation
-    resource. ``document`` can be supplied for an already-declared source Document.
+    One call represents one source occurrence of the exact subject/predicate/object
+    assertion. ``prov_str`` may be one provenance value or a collection of values;
+    all valid provenance Documents are attached to that single Relation occurrence.
     """
+    global relation_occurrence_counts
     subj = ensure_uriref(subj)
     pred = ensure_uriref(pred)
     obj_node = obj if isinstance(obj, (URIRef, BNode, Literal)) else Literal(obj)
     if pred not in REIFIABLE_RELATION_PREDICATES:
         raise ValueError(f"Predicate is outside the MAKAAO reification policy: {pred}")
 
+    documents = set()
     if document is not None:
         doc = ensure_uriref(document)
         g.add((doc, RDF.type, MAKAAO.Document))
+        documents.add(doc)
     else:
-        doc = ensure_provenance_document(g, prov_str)
-        if doc is None:
+        for provenance_value in _provenance_values(prov_str):
+            doc = ensure_provenance_document(g, provenance_value)
+            if doc is not None:
+                documents.add(doc)
+        if not documents:
             return None
 
-    rel = deterministic_relation_uri(subj, pred, obj_node)
+    key = (subj, pred, obj_node)
+    relation_occurrence_counts[key] += 1
+    occurrence = relation_occurrence_counts[key]
+    rel = deterministic_relation_uri(subj, pred, obj_node, occurrence)
     g.add((rel, RDF.type, MAKAAO.Relation))
     g.add((rel, RDF.type, RDF.Statement))
     g.add((rel, RDF.subject, subj))
@@ -1254,7 +1343,8 @@ def add_reified_relation(g, subj, pred, obj, prov_str=None, *, document=None):
     g.add((rel, RDF.object, obj_node))
     if GLOBAL_ACTIVITY is not None:
         g.add((rel, PROV.wasGeneratedBy, GLOBAL_ACTIVITY))
-    g.add((rel, PROV.wasDerivedFrom, doc))
+    for doc in sorted(documents, key=str):
+        g.add((rel, PROV.wasDerivedFrom, doc))
     return rel
 
 # ===================== ENRICHMENT HELPERS =====================
@@ -1453,10 +1543,184 @@ def add_orpha_umls_close_matches(
     return triples_added
 
 
+def read_strict_autoimmune_disease_ids(path):
+    """Read the manually curated strict-autoimmune disease dictionary.
+
+    Dictionary keys are authoritative identifiers and must be explicit
+    ``CUI:C...`` or ``ORPHA:...`` values. The associated strings are retained
+    only in the source file for human audit; classification never uses labels.
+    """
+    dictionary_path = Path(path)
+    if not dictionary_path.is_file():
+        raise FileNotFoundError(
+            f"Required strict-autoimmune disease dictionary is missing: {dictionary_path}"
+        )
+    try:
+        payload = json.loads(dictionary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"Could not read strict-autoimmune disease dictionary {dictionary_path}: {exc}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{dictionary_path} must contain a JSON object")
+
+    strict_cuis = set()
+    strict_orphas = set()
+    for raw_key, labels in payload.items():
+        key = str(raw_key or "").strip()
+        upper = key.upper()
+        if not isinstance(labels, list) or not all(isinstance(label, str) for label in labels):
+            raise ValueError(
+                f"{dictionary_path}: {raw_key!r} must map to a JSON list of strings"
+            )
+        if upper.startswith("CUI:"):
+            cui = canonical_cui_code(key)
+            if not cui:
+                raise ValueError(f"{dictionary_path}: invalid CUI key {raw_key!r}")
+            strict_cuis.add(cui)
+        elif upper.startswith("ORPHA:"):
+            orpha = canonical_orpha_code(key)
+            if not orpha:
+                raise ValueError(f"{dictionary_path}: invalid ORPHA key {raw_key!r}")
+            strict_orphas.add(orpha)
+        else:
+            raise ValueError(
+                f"{dictionary_path}: unsupported key {raw_key!r}; expected CUI:... or ORPHA:..."
+            )
+
+    if not strict_cuis and not strict_orphas:
+        raise ValueError(f"{dictionary_path}: strict-autoimmune dictionary is empty")
+    return strict_cuis, strict_orphas
+
+
+def apply_strict_autoimmune_classification(graph, strict_cuis, strict_orphas):
+    """Classify curated strict diseases and propagate over CUI↔ORDO disease matches.
+
+    A dictionary entry can only make an already recognised disease class more
+    specific; it can never turn a Target or another non-disease class into a
+    disease. Strict status is then propagated to closure only across class-level
+    ``skos:closeMatch`` links joining a local CUI disease class to an ORDO
+    disease class.
+    """
+    disease_root = MAKAAO.AutoimmunityRelatedDisease
+    strict_root = MAKAAO.AutoimmuneDisease
+    cui_prefix = str(MAKAAO) + "CUI_"
+    ordo_prefix = "http://www.orpha.net/ORDO/Orphanet_"
+
+    def is_disease_class(node):
+        return (
+            (node, RDFS.subClassOf, disease_root) in graph
+            or (node, RDFS.subClassOf, strict_root) in graph
+        )
+
+    def cui_code(node):
+        if not isinstance(node, URIRef) or not str(node).startswith(cui_prefix):
+            return None
+        return canonical_cui_code(str(node)[len(cui_prefix):])
+
+    def orpha_code(node):
+        if not isinstance(node, URIRef) or not str(node).startswith(ordo_prefix):
+            return None
+        return canonical_orpha_code(str(node)[len(ordo_prefix):], allow_bare=True)
+
+    direct = set()
+    unmatched_cuis = set()
+    unmatched_orphas = set()
+
+    for cui in sorted(set(strict_cuis)):
+        disease_class = MAKAAO[f"CUI_{cui}"]
+        if is_disease_class(disease_class):
+            graph.add((disease_class, RDFS.subClassOf, strict_root))
+            direct.add(disease_class)
+        else:
+            unmatched_cuis.add(cui)
+
+    for orpha in sorted(set(strict_orphas), key=int):
+        disease_class = URIRef(f"{ordo_prefix}{orpha}")
+        if is_disease_class(disease_class):
+            graph.add((disease_class, RDFS.subClassOf, strict_root))
+            direct.add(disease_class)
+        else:
+            unmatched_orphas.add(orpha)
+
+    # Only CUI↔ORDO links between two already-recognised disease classes can
+    # carry the curated strict-autoimmune classification.
+    disease_close_match_edges = set()
+    for subject, obj in graph.subject_objects(SKOS.closeMatch):
+        if not (isinstance(subject, URIRef) and isinstance(obj, URIRef)):
+            continue
+        subject_cui, object_cui = cui_code(subject), cui_code(obj)
+        subject_orpha, object_orpha = orpha_code(subject), orpha_code(obj)
+        if not (
+            (subject_cui and object_orpha)
+            or (subject_orpha and object_cui)
+        ):
+            continue
+        if not (is_disease_class(subject) and is_disease_class(obj)):
+            continue
+        disease_close_match_edges.add(
+            tuple(sorted((subject, obj), key=str))
+        )
+
+    strict_classes = set(direct)
+    changed = True
+    while changed:
+        changed = False
+        for left, right in disease_close_match_edges:
+            if left not in strict_classes and right not in strict_classes:
+                continue
+            for node in (left, right):
+                if node in strict_classes:
+                    continue
+                graph.add((node, RDFS.subClassOf, strict_root))
+                strict_classes.add(node)
+                changed = True
+
+    # Target-role safeguard: a CUI represented as a Target instance must never
+    # acquire strict disease status through this curation layer.
+    target_collisions = []
+    for disease_class in sorted(strict_classes, key=str):
+        code = cui_code(disease_class)
+        if not code:
+            continue
+        target_instance = MAKAAO[f"CUI_{code}_instance"]
+        if (target_instance, RDF.type, MAKAAO.Target) in graph:
+            target_collisions.append(code)
+    if target_collisions:
+        raise RuntimeError(
+            "Strict-autoimmune classification unexpectedly contains Target CUI(s): "
+            + ", ".join(target_collisions)
+        )
+
+    inconsistent_edges = [
+        (left, right)
+        for left, right in disease_close_match_edges
+        if ((left in strict_classes) != (right in strict_classes))
+    ]
+    if inconsistent_edges:
+        preview = ", ".join(
+            f"{left} <-> {right}" for left, right in inconsistent_edges[:20]
+        )
+        raise RuntimeError(
+            "CUI/ORDO disease closeMatch classification is inconsistent: " + preview
+        )
+
+    propagated = strict_classes - direct
+    return {
+        "direct_classes": direct,
+        "propagated_classes": propagated,
+        "strict_classes": strict_classes,
+        "unmatched_cuis": unmatched_cuis,
+        "unmatched_orphas": unmatched_orphas,
+        "disease_close_match_edges": disease_close_match_edges,
+    }
+
+
 # ===================== GRAPH BUILDERS =====================
 def init_graph():  # start an empty knowledge graph and add a few basic things to it
-    global document_map, GLOBAL_ACTIVITY, _label_seen
+    global document_map, relation_occurrence_counts, GLOBAL_ACTIVITY, _label_seen
     document_map = {}
+    relation_occurrence_counts = defaultdict(int)
     GLOBAL_ACTIVITY = None
     _label_seen = defaultdict(
         lambda: {
@@ -1544,6 +1808,9 @@ def init_graph():  # start an empty knowledge graph and add a few basic things t
     )
     g.add((MAKAAO.AutoimmunityRelatedDisease, RDF.type, OWL.Class))
     g.add((MAKAAO.AutoimmunityRelatedDisease, RDFS.label, Literal("Autoimmunity-related disease")))
+    g.add((MAKAAO.AutoimmuneDisease, RDF.type, OWL.Class))
+    g.add((MAKAAO.AutoimmuneDisease, RDFS.label, Literal("Autoimmune disease")))
+    g.add((MAKAAO.AutoimmuneDisease, RDFS.subClassOf, MAKAAO.AutoimmunityRelatedDisease))
     g.add((MAKAAO.Target, RDF.type, OWL.Class))
     g.add((MAKAAO.Target, RDFS.label, Literal("Target")))
     g.add((MAKAAO.CUI, RDF.type, OWL.Class))
@@ -1869,7 +2136,7 @@ def build_core(
         inst_aab = MAKAAO[
             f"aab_{idx}_instance"
         ]  # for each aab_id, we get the name of the corresponding instance
-        for cui, pmids in items:
+        for cui, pmids in sorted(items, key=_source_occurrence_sort_key):
             cui_key = canonical_cui_code(cui)
             if not cui_key:
                 continue
@@ -1885,9 +2152,8 @@ def build_core(
             g.add((cui_uri, RDF.type, MAKAAO.Target))
             g.add((inst_aab, BAO_HAS_TARGET, cui_uri))
             g.add((cui_uri, BAO_IS_TARGET_FOR, inst_aab))
-            for p in pmids or [""]:
-                add_reified_relation(g, inst_aab, BAO_HAS_TARGET, cui_uri, p)
-                add_reified_relation(g, cui_uri, BAO_IS_TARGET_FOR, inst_aab, p)
+            add_reified_relation(g, inst_aab, BAO_HAS_TARGET, cui_uri, pmids)
+            add_reified_relation(g, cui_uri, BAO_IS_TARGET_FOR, inst_aab, pmids)
 
     # UniProt targets
     up_names_added, up_total = 0, 0
@@ -1895,7 +2161,7 @@ def build_core(
         "uniprot"
     ].items():  # for each aab_id, we get the associated uniprot ids
         inst_aab = MAKAAO[f"aab_{idx}_instance"]
-        for upid_in, pmids in items:
+        for upid_in, pmids in sorted(items, key=_source_occurrence_sort_key):
             up_total += 1
             base, norm, _ = canon_uniprot_id(
                 upid_in
@@ -1923,15 +2189,16 @@ def build_core(
             g.add((prot_ind, RDFS.seeAlso, external_up))
             g.add((inst_aab, BAO_HAS_TARGET, prot_ind))
             g.add((prot_ind, BAO_IS_TARGET_FOR, inst_aab))
-            for p in pmids or [""]:
-                add_reified_relation(g, inst_aab, BAO_HAS_TARGET, prot_ind, p)
-                add_reified_relation(g, prot_ind, BAO_IS_TARGET_FOR, inst_aab, p)
+            add_reified_relation(g, inst_aab, BAO_HAS_TARGET, prot_ind, pmids)
+            add_reified_relation(g, prot_ind, BAO_IS_TARGET_FOR, inst_aab, pmids)
     print(f"UniProt targets: named={up_names_added}/{up_total}")
 
     # ChEBI targets
     for idx, items in data["chebi"].items():
         inst_aab = MAKAAO[f"aab_{idx}_instance"]
-        for chebi_raw, pmids in items:  # for each chebi id associated to that aab_id
+        for chebi_raw, pmids in sorted(
+            items, key=_source_occurrence_sort_key
+        ):  # for each chebi id associated to that aab_id
             code_colon, code_obo = canon_chebi_id(chebi_raw)
             chebi_cls = URIRef(
                 "http://purl.obolibrary.org/obo/" + code_obo
@@ -1965,13 +2232,12 @@ def build_core(
                 g.add((chebi_ind, RDFS.seeAlso, external_chebi))
             g.add((inst_aab, BAO_HAS_TARGET, chebi_ind))
             g.add((chebi_ind, BAO_IS_TARGET_FOR, inst_aab))
-            for p in pmids or [""]:
-                add_reified_relation(
-                    g, inst_aab, BAO_HAS_TARGET, chebi_ind, p
-                )
-                add_reified_relation(
-                    g, chebi_ind, BAO_IS_TARGET_FOR, inst_aab, p
-                )
+            add_reified_relation(
+                g, inst_aab, BAO_HAS_TARGET, chebi_ind, pmids
+            )
+            add_reified_relation(
+                g, chebi_ind, BAO_IS_TARGET_FOR, inst_aab, pmids
+            )
 
     return {
         hpo_code: tuple(sorted(instances, key=str))
@@ -1996,13 +2262,13 @@ def process_diseases(
         if os.path.exists(CODE_NAMES_CSV)
         else ({}, {})
     )
+    processed_ordo_hpo = set()
 
     for idx, items in data["diseases"].items():
         aab_inst = MAKAAO[f"aab_{idx}_instance"]
-        for (
-            code_raw,
-            prov,
-        ) in items:  # loop for every disease code associated to that aab_id in the data
+        for code_raw, prov in sorted(
+            items, key=_source_occurrence_sort_key
+        ):  # one source occurrence of a disease assertion
             code_upper = (code_raw or "").strip().upper()
             if not code_upper:
                 continue
@@ -2013,8 +2279,9 @@ def process_diseases(
             orpha_num = canonical_orpha_code(code_raw)
             if orpha_num:
                 d_cls = URIRef(f"http://www.orpha.net/ORDO/Orphanet_{orpha_num}")
-                # The ORDO declaration and source hierarchy come from the
-                # imported ORDO module. This is the MAKAAO alignment axiom.
+                # Declare every ORDO disease class explicitly in the canonical KG;
+                # the source hierarchy still comes from the imported ORDO module.
+                g.add((d_cls, RDF.type, OWL.Class))
                 g.add((d_cls, RDFS.subClassOf, MAKAAO.AutoimmunityRelatedDisease))
                 inst = MAKAAO[
                     f"orpha_{orpha_num}_instance"
@@ -2024,60 +2291,97 @@ def process_diseases(
                 if orpha_name:
                     add_pref(g, inst, orpha_name)
 
-                # Use the ORDO URI string (same as keys in orpha_hpo_links)
-                for link in orpha_hpo_links.get(str(d_cls), []):
-                    # HPO identifier (may be HP:..., HP_..., or full URI)
-                    hpo_id_raw = (link.get("HPOId") or link.get("hpoid") or "").strip()
-                    if not hpo_id_raw:
-                        continue
-
-                    # Normalize HPO code and build URI
-                    code_norm = canonical_hpo_code(hpo_id_raw)
-                    pos_uri = hp_to_obo_uri(code_norm)
-
-                    if pos_uri is None or not code_norm:
-                        continue
-
-                    # Label priority: code_names.csv HPO first, then Orphadata HPOTerm
-                    term = (
-                        (hpo_cn_names.get(code_norm) or "").strip()
-                        or (link.get("HPOTerm") or link.get("hpoterm") or "").strip()
+                # ORDO -> HPO assertions come from Orphadata, not from the
+                # AAb -> disease source rows. Process each ORDO disease's HPO
+                # records once, even if the disease is linked to several AAbs or
+                # appears in several MAKAAO source rows.
+                if d_cls not in processed_ordo_hpo:
+                    processed_ordo_hpo.add(d_cls)
+                    hpo_links = list(orpha_hpo_links.get(str(d_cls), []))
+                    hpo_links.sort(
+                        key=lambda link: (
+                            canonical_hpo_code(
+                                (link.get("HPOId") or link.get("hpoid") or "").strip()
+                            )
+                            or "",
+                            (
+                                link.get("HPOTerm")
+                                or link.get("hpoterm")
+                                or ""
+                            ).strip().casefold(),
+                            (
+                                link.get("HPOTerm")
+                                or link.get("hpoterm")
+                                or ""
+                            ).strip(),
+                        )
                     )
-                    # Reuse local positivity individuals whenever this HPO
-                    # class corresponds to a generated positivity class. Only
-                    # otherwise instantiate the external HPO class directly.
-                    phenotype_instances = positivity_instances_by_hpo.get(
-                        code_norm, ()
-                    )
-                    if not phenotype_instances:
-                        pos_inst = MAKAAO[f"hpo_{make_valid(code_norm)}_instance"]
-                        g.add((pos_inst, RDF.type, pos_uri))
-                        if term:
-                            add_pref(g, pos_inst, term)
-                        class_label = g.value(pos_uri, RDFS.label) or g.value(
-                            pos_uri, SKOS.prefLabel
-                        )
-                        if class_label:
-                            g.add((pos_inst, RDFS.label, class_label))
-                        phenotype_instances = (pos_inst,)
 
-                    for pos_inst in phenotype_instances:
-                        g.add((inst, SIO["SIO_001279"], pos_inst))  # has_phenotype
-                        g.add((pos_inst, SIO["SIO_001280"], inst))  # is_phenotype_of
-                        add_reified_relation(
-                            g,
-                            inst,
-                            SIO["SIO_001279"],
-                            pos_inst,
-                            "https://www.orphadata.com/data/xml/en_product4.xml",
+                    for link in hpo_links:
+                        # HPO identifier (may be HP:..., HP_..., or full URI)
+                        hpo_id_raw = (
+                            link.get("HPOId") or link.get("hpoid") or ""
+                        ).strip()
+                        if not hpo_id_raw:
+                            continue
+
+                        # Normalize HPO code and build URI
+                        code_norm = canonical_hpo_code(hpo_id_raw)
+                        pos_uri = hp_to_obo_uri(code_norm)
+
+                        if pos_uri is None or not code_norm:
+                            continue
+
+                        # Label priority: code_names.csv HPO first, then Orphadata HPOTerm
+                        term = (
+                            (hpo_cn_names.get(code_norm) or "").strip()
+                            or (
+                                link.get("HPOTerm")
+                                or link.get("hpoterm")
+                                or ""
+                            ).strip()
                         )
-                        add_reified_relation(
-                            g,
-                            pos_inst,
-                            SIO["SIO_001280"],
-                            inst,
-                            "https://www.orphadata.com/data/xml/en_product4.xml",
+                        # Reuse local positivity individuals whenever this HPO
+                        # class corresponds to a generated positivity class. Only
+                        # otherwise instantiate the external HPO class directly.
+                        phenotype_instances = positivity_instances_by_hpo.get(
+                            code_norm, ()
                         )
+                        if not phenotype_instances:
+                            pos_inst = MAKAAO[
+                                f"hpo_{make_valid(code_norm)}_instance"
+                            ]
+                            g.add((pos_inst, RDF.type, pos_uri))
+                            if term:
+                                add_pref(g, pos_inst, term)
+                            class_label = g.value(pos_uri, RDFS.label) or g.value(
+                                pos_uri, SKOS.prefLabel
+                            )
+                            if class_label:
+                                g.add((pos_inst, RDFS.label, class_label))
+                            phenotype_instances = (pos_inst,)
+
+                        for pos_inst in phenotype_instances:
+                            g.add(
+                                (inst, SIO["SIO_001279"], pos_inst)
+                            )  # has_phenotype
+                            g.add(
+                                (pos_inst, SIO["SIO_001280"], inst)
+                            )  # is_phenotype_of
+                            add_reified_relation(
+                                g,
+                                inst,
+                                SIO["SIO_001279"],
+                                pos_inst,
+                                "https://www.orphadata.com/data/xml/en_product4.xml",
+                            )
+                            add_reified_relation(
+                                g,
+                                pos_inst,
+                                SIO["SIO_001280"],
+                                inst,
+                                "https://www.orphadata.com/data/xml/en_product4.xml",
+                            )
 
             # UMLS CUI disease
             elif cui_norm:  # if current disease code contains a CUI:
@@ -2111,13 +2415,12 @@ def process_diseases(
                 (aab_inst, SIO["SIO_001403"], inst)
             )  # we link that disease instance to the current aab instance
             g.add((inst, SIO["SIO_001403"], aab_inst))
-            for p in prov or [""]:
-                add_reified_relation(
-                    g, aab_inst, SIO["SIO_001403"], inst, p
-                )
-                add_reified_relation(
-                    g, inst, SIO["SIO_001403"], aab_inst, p
-                )
+            add_reified_relation(
+                g, aab_inst, SIO["SIO_001403"], inst, prov
+            )
+            add_reified_relation(
+                g, inst, SIO["SIO_001403"], aab_inst, prov
+            )
 
 def read_required_json_object(path, description):
     """Read a required JSON object and fail on absence or malformed content."""
@@ -2234,6 +2537,14 @@ def process_loinc_mappings(
 
     seen_parts = set()
     seen_terms = set()
+    seen_component_assertions = set()
+
+    relevant_rows.sort(
+        key=lambda row: (
+            (row.get("aab_id") or "").strip(),
+            canonical_loinc_code(row.get("loinc_id"), "part") or "",
+        )
+    )
 
     for r in relevant_rows:
         idx = (r.get("aab_id") or "").strip()
@@ -2284,15 +2595,20 @@ def process_loinc_mappings(
                 add_pref(g, term_inst, term_label)
 
             # Relate the LOINC Term individual to the LOINC Part individual.
-            # This structural assertion is sourced from LOINC's Primary Part Link file.
+            # This structural assertion is sourced from LOINC's Primary Part Link
+            # file and must be reified once per source assertion, not once per
+            # AAb that happens to map to the same Part.
+            component_assertion = (term_inst, part_inst)
             g.add((term_inst, LOINC_COMPONENT, part_inst))
-            add_reified_relation(
-                g,
-                term_inst,
-                LOINC_COMPONENT,
-                part_inst,
-                os.path.basename(LOINC_PART_LINK_CSV),
-            )
+            if component_assertion not in seen_component_assertions:
+                seen_component_assertions.add(component_assertion)
+                add_reified_relation(
+                    g,
+                    term_inst,
+                    LOINC_COMPONENT,
+                    part_inst,
+                    os.path.basename(LOINC_PART_LINK_CSV),
+                )
 
     print(
         f"Loaded LOINC classes and instances — Parts:{len(seen_parts)} Terms:{len(seen_terms)}"
@@ -2777,6 +3093,7 @@ def finalize_release_manifest_and_checksums(
     stage_kg: Path,
     stage_tbox: Path,
     root_catalog: Path,
+    strict_autoimmune_curation: dict | None = None,
 ) -> None:
     """Bind every permanent root and reasoning artifact into one checksum set."""
     manifest_path = stage_reasoning / "reasoning-manifest.json"
@@ -2801,6 +3118,8 @@ def finalize_release_manifest_and_checksums(
         "path": f"../{root_catalog.name}",
         "sha256": _file_sha256(root_catalog),
     }
+    if strict_autoimmune_curation is not None:
+        manifest["strict_autoimmune_curation"] = dict(strict_autoimmune_curation)
     manifest_path.write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
@@ -2888,6 +3207,7 @@ def validate_build_prerequisites() -> None:
     required_files = [
         Path(REASONING_RELEASE_BUILDER),
         Path(ORPHA_UMLS_MAPPINGS_JSON),
+        Path(STRICT_AUTOIMMUNE_DISEASES_JSON),
         Path(LOINC_PART_TEST_JSON),
         Path(LOINC_PART_LINK_CSV),
         Path(LOINC_INDEX_CSV),
@@ -3255,6 +3575,18 @@ def main():
             "Loaded ORPHA/UMLS enrichment mappings: "
             f"pairs={len(orpha_umls_mapping_pairs)}"
         )
+        strict_autoimmune_cuis, strict_autoimmune_orphas = (
+            read_strict_autoimmune_disease_ids(STRICT_AUTOIMMUNE_DISEASES_JSON)
+        )
+        strict_dictionary_sha256 = hashlib.sha256(
+            Path(STRICT_AUTOIMMUNE_DISEASES_JSON).read_bytes()
+        ).hexdigest()
+        print(
+            "Loaded strict-autoimmune disease dictionary: "
+            f"entries={len(strict_autoimmune_cuis) + len(strict_autoimmune_orphas)} "
+            f"CUI={len(strict_autoimmune_cuis)} ORPHA={len(strict_autoimmune_orphas)} "
+            f"sha256={strict_dictionary_sha256}"
+        )
     
         # this function call add AAb with their class hierarchy, and their positivity phenotypes. It also add their targets (UMLS, CHebi, or Uniprot), instantiate all these things and link them together as needed
         positivity_instances_by_hpo = build_core(
@@ -3323,6 +3655,51 @@ def main():
             f"closeMatch_triples_added={label_close_match_triples_added}"
         )
 
+        strict_autoimmune_result = apply_strict_autoimmune_classification(
+            g,
+            strict_autoimmune_cuis,
+            strict_autoimmune_orphas,
+        )
+        unmatched_count = (
+            len(strict_autoimmune_result["unmatched_cuis"])
+            + len(strict_autoimmune_result["unmatched_orphas"])
+        )
+        print(
+            "Strict autoimmune classification: "
+            f"direct={len(strict_autoimmune_result['direct_classes'])} "
+            f"propagated={len(strict_autoimmune_result['propagated_classes'])} "
+            f"total={len(strict_autoimmune_result['strict_classes'])} "
+            f"validated_CUI_ORDO_closeMatch_edges="
+            f"{len(strict_autoimmune_result['disease_close_match_edges'])} "
+            f"dictionary_entries_not_present_as_KG_diseases={unmatched_count}"
+        )
+        strict_autoimmune_curation = {
+            "source": Path(STRICT_AUTOIMMUNE_DISEASES_JSON)
+            .resolve()
+            .relative_to(PROJECT_DIR.resolve())
+            .as_posix(),
+            "sha256": strict_dictionary_sha256,
+            "entries": len(strict_autoimmune_cuis) + len(strict_autoimmune_orphas),
+            "direct_classes": len(strict_autoimmune_result["direct_classes"]),
+            "propagated_classes": len(strict_autoimmune_result["propagated_classes"]),
+            "total_classes": len(strict_autoimmune_result["strict_classes"]),
+            "unmatched_entries": unmatched_count,
+        }
+        if unmatched_count:
+            unmatched_preview = (
+                [f"CUI:{code}" for code in sorted(strict_autoimmune_result["unmatched_cuis"])]
+                + [
+                    f"ORPHA:{code}"
+                    for code in sorted(
+                        strict_autoimmune_result["unmatched_orphas"], key=int
+                    )
+                ]
+            )
+            print(
+                "Strict autoimmune dictionary entries not present as KG disease classes "
+                f"(first 20): {', '.join(unmatched_preview[:20])}"
+            )
+
         # Set file-level metadata only after the last graph-mutating audit so
         # void:triples records the final provenance-bearing KG size.
         set_output_file_metadata(g, Path(OUTPUT_OWL_ENRICHED).name)
@@ -3376,6 +3753,7 @@ def main():
             stage_kg,
             stage_tbox,
             root_catalog,
+            strict_autoimmune_curation,
         )
         # Java temporary files are build-time artifacts and must not be moved
         # into the permanent release by the directory-level commit.

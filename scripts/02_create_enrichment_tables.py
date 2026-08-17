@@ -41,7 +41,8 @@ DATA_DIR = str(PROJECT_DIR / "data")
 IN_PATH = "/mnt/d/umls-2024AB-full_metamor/2024AB-full/2024AB/2024AB/META/MRCONSO.RRF"
 XML_PATH = os.path.join(DATA_DIR, "en_product4.xml")
 ENRICH_DIR = os.path.join(DATA_DIR, "enrichment_tables")
-INPUT_CSV_CORE = os.path.join(DATA_DIR, "makaao_core.csv")
+#INPUT_CSV_CORE = os.path.join(DATA_DIR, "makaao_core.csv")
+INPUT_CSV_CORE = os.path.join(DATA_DIR, "makaao_sample.csv")
 LOINC_PART_LINK_CSV = os.path.join(DATA_DIR, "LoincPartLink_Primary.csv")
 
 # Any English, unsuppressed MRCONSO atom may provide a label for a UMLS CUI.

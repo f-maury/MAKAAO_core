@@ -95,6 +95,7 @@ def make_processed_tables(base: Path) -> None:
         ["index", "related_diseases_id", "diseases_pmids"],
         [
             {"index": "1", "related_diseases_id": "ORPHA:123|C0000009|free disease", "diseases_pmids": "PMID:300"},
+            {"index": "1", "related_diseases_id": "ORPHA:123", "diseases_pmids": "PMID:301"},
             {"index": "99", "related_diseases_id": "ORPHA:999", "diseases_pmids": "PMID:999"},
         ],
     )
@@ -138,6 +139,7 @@ def test_synthetic_processed_table_components_metadata_and_tbox(
         ("ORPHA:123", ["https://pubmed.ncbi.nlm.nih.gov/300"]),
         ("C0000009", ["https://pubmed.ncbi.nlm.nih.gov/300"]),
         ("free disease", ["https://pubmed.ncbi.nlm.nih.gov/300"]),
+        ("ORPHA:123", ["https://pubmed.ncbi.nlm.nih.gov/301"]),
     ]
 
     graph = mod.init_graph()
@@ -148,6 +150,11 @@ def test_synthetic_processed_table_components_metadata_and_tbox(
     ) in graph
     assert not list(graph.triples((mod.MAKAAO.BiomolecularEntity, None, None)))
     assert not list(graph.triples((None, None, mod.MAKAAO.BiomolecularEntity)))
+    assert (
+        mod.MAKAAO.AutoimmuneDisease,
+        RDFS.subClassOf,
+        mod.MAKAAO.AutoimmunityRelatedDisease,
+    ) in graph
 
     positivity_instances_by_hpo = mod.build_core(
         graph,
@@ -197,6 +204,7 @@ def test_synthetic_processed_table_components_metadata_and_tbox(
     orpha_instance = mod.MAKAAO["orpha_123_instance"]
     cui_disease_instance = mod.MAKAAO["CUI_C0000009_instance"]
     free_disease_instance = mod.MAKAAO[f"{mod.safe_local_fragment('FREE DISEASE', prefix='disease')}_instance"]
+    assert (ordo, RDF.type, OWL.Class) in graph
     assert (ordo, RDFS.subClassOf, mod.MAKAAO.AutoimmunityRelatedDisease) in graph
     assert (
         mod.MAKAAO["CUI_C0000009"],
@@ -211,6 +219,37 @@ def test_synthetic_processed_table_components_metadata_and_tbox(
     assert not list(
         graph.triples((mod.MAKAAO["hpo_HP_0000001_instance"], None, None))
     )
+
+    # Two MAKAAO source rows assert the exact same AAb -> ORDO triple, so they
+    # become two Relation occurrences. The ORDO -> HPO source assertion itself
+    # still comes from one Orphadata record and must not be duplicated merely
+    # because the ORDO disease was encountered twice.
+    aab_orpha_relations = {
+        relation
+        for relation in graph.subjects(RDF.subject, aab_instance)
+        if (relation, RDF.predicate, mod.SIO["SIO_001403"]) in graph
+        and (relation, RDF.object, orpha_instance) in graph
+    }
+    assert aab_orpha_relations == {
+        mod.deterministic_relation_uri(
+            aab_instance, mod.SIO["SIO_001403"], orpha_instance, 1
+        ),
+        mod.deterministic_relation_uri(
+            aab_instance, mod.SIO["SIO_001403"], orpha_instance, 2
+        ),
+    }
+
+    ordo_hpo_relations = {
+        relation
+        for relation in graph.subjects(RDF.subject, orpha_instance)
+        if (relation, RDF.predicate, mod.SIO["SIO_001279"]) in graph
+        and (relation, RDF.object, positivity_instance) in graph
+    }
+    assert ordo_hpo_relations == {
+        mod.deterministic_relation_uri(
+            orpha_instance, mod.SIO["SIO_001279"], positivity_instance, 1
+        )
+    }
 
     loinc_index = tmp_path / "index_loinc.csv"
     write_csv(
@@ -232,11 +271,24 @@ def test_synthetic_processed_table_components_metadata_and_tbox(
         {"1234-5": "Protein X test"},
         part_test_json=str(part_tests),
     )
+    loinc_term_instance = mod.MAKAAO["loinc_1234-5_instance"]
+    loinc_part_instance = mod.MAKAAO["loinc_LP100-1_instance"]
     assert (
-        mod.MAKAAO["loinc_1234-5_instance"],
+        loinc_term_instance,
         mod.LOINC_COMPONENT,
-        mod.MAKAAO["loinc_LP100-1_instance"],
+        loinc_part_instance,
     ) in graph
+    loinc_component_relations = {
+        relation
+        for relation in graph.subjects(RDF.subject, loinc_term_instance)
+        if (relation, RDF.predicate, mod.LOINC_COMPONENT) in graph
+        and (relation, RDF.object, loinc_part_instance) in graph
+    }
+    assert loinc_component_relations == {
+        mod.deterministic_relation_uri(
+            loinc_term_instance, mod.LOINC_COMPONENT, loinc_part_instance, 1
+        )
+    }
 
     added = mod.add_orpha_umls_close_matches(
         graph,
@@ -272,6 +324,7 @@ def test_synthetic_processed_table_components_metadata_and_tbox(
 
     tbox = mod.extract_tbox(graph, str(mod.MAKAAO))
     assert (mod.MAKAAO["aab_1"], RDF.type, OWL.Class) in tbox
+    assert (ordo, RDF.type, OWL.Class) in tbox
     assert (ordo, RDFS.subClassOf, mod.MAKAAO.AutoimmunityRelatedDisease) in tbox
     assert (restriction, RDF.type, OWL.Restriction) in tbox
     assert not list(tbox.triples((None, mod.DCAT.downloadURL, None)))
@@ -310,26 +363,63 @@ def test_csv_and_identifier_error_paths(mod, tmp_path):
         mod.read_required_json_object(array, "test dictionary")
 
 
-def test_reification_reuses_relation_and_documents(mod):
+def test_reification_preserves_occurrences_and_reuses_documents(mod):
     graph = mod.init_graph()
     subject = mod.MAKAAO["s"]
     predicate = mod.BAO_HAS_TARGET
     obj = mod.MAKAAO["o"]
     graph.add((subject, predicate, obj))
 
-    mod.add_reified_relation(graph, subject, predicate, obj, "PMID:123")
-    mod.add_reified_relation(graph, subject, predicate, obj, "PMID:124")
-    mod.add_reified_relation(graph, subject, predicate, obj, "PMID:123")
-    mod.add_reified_relation(graph, subject, predicate, obj, "")
+    # One source occurrence may have several provenance documents; this remains
+    # one Relation occurrence. A second source occurrence of the exact same S/P/O
+    # gets the next local occurrence number.
+    relation_1 = mod.add_reified_relation(
+        graph, subject, predicate, obj, ["PMID:123", "PMID:124"]
+    )
+    relation_2 = mod.add_reified_relation(
+        graph, subject, predicate, obj, "PMID:123"
+    )
+    relation_3 = mod.add_reified_relation(
+        graph, subject, predicate, obj, "PMID:125"
+    )
+    missing = mod.add_reified_relation(graph, subject, predicate, obj, "")
 
-    relations = list(graph.subjects(RDF.subject, subject))
-    assert len(relations) == 1
-    relation = relations[0]
-    documents = set(graph.objects(relation, mod.PROV.wasDerivedFrom))
-    assert len(documents) == 2
-    assert all((document, RDF.type, mod.MAKAAO.Document) in graph for document in documents)
+    assert missing is None
+    assert relation_1 == mod.MAKAAO["rel_s_BAO~u0000211_o_1"]
+    assert relation_2 == mod.MAKAAO["rel_s_BAO~u0000211_o_2"]
+    assert relation_3 == mod.MAKAAO["rel_s_BAO~u0000211_o_3"]
+
+    relations = set(graph.subjects(RDF.subject, subject))
+    assert relations == {relation_1, relation_2, relation_3}
+    documents_1 = set(graph.objects(relation_1, mod.PROV.wasDerivedFrom))
+    documents_2 = set(graph.objects(relation_2, mod.PROV.wasDerivedFrom))
+    documents_3 = set(graph.objects(relation_3, mod.PROV.wasDerivedFrom))
+    assert len(documents_1) == 2
+    assert len(documents_2) == len(documents_3) == 1
+    assert documents_2 < documents_1
+    documents = documents_1 | documents_2 | documents_3
+    assert len(documents) == 3
+    assert all(
+        (document, RDF.type, mod.MAKAAO.Document) in graph
+        for document in documents
+    )
     # PMID provenance is normalized to an external PubMed URL.
     assert all(list(graph.objects(document, RDFS.seeAlso)) for document in documents)
+
+    # Formerly ambiguous component boundaries must not produce the same URI.
+    collision_a = mod.deterministic_relation_uri(
+        mod.MAKAAO["a"],
+        predicate,
+        mod.MAKAAO["b_BAO_0000211_c"],
+        1,
+    )
+    collision_b = mod.deterministic_relation_uri(
+        mod.MAKAAO["a_BAO_0000211_b"],
+        predicate,
+        mod.MAKAAO["c"],
+        1,
+    )
+    assert collision_a != collision_b
 
 
 def test_output_metadata_replaces_old_distribution_and_rejects_metadata_tbox(mod):
@@ -354,3 +444,121 @@ def test_output_metadata_replaces_old_distribution_and_rejects_metadata_tbox(mod
     bad_tbox.add((dataset, RDF.type, mod.DCAT.Dataset))
     with pytest.raises(RuntimeError, match="dataset/distribution/service"):
         mod.validate_tbox_export(bad_tbox)
+
+
+def test_strict_autoimmune_dictionary_and_cui_ordo_propagation(mod, tmp_path):
+    graph = mod.init_graph()
+
+    ordo_from_cui = URIRef("http://www.orpha.net/ORDO/Orphanet_123")
+    cui_direct = mod.MAKAAO["CUI_C0000001"]
+    graph.add((ordo_from_cui, RDF.type, OWL.Class))
+    graph.add((ordo_from_cui, RDFS.subClassOf, mod.MAKAAO.AutoimmunityRelatedDisease))
+    graph.add((cui_direct, RDF.type, OWL.Class))
+    graph.add((cui_direct, RDFS.subClassOf, mod.MAKAAO.CUI))
+    graph.add((cui_direct, RDFS.subClassOf, mod.MAKAAO.AutoimmunityRelatedDisease))
+    graph.add((ordo_from_cui, SKOS.closeMatch, cui_direct))
+    graph.add((cui_direct, SKOS.closeMatch, ordo_from_cui))
+
+    ordo_direct = URIRef("http://www.orpha.net/ORDO/Orphanet_456")
+    cui_from_orpha = mod.MAKAAO["CUI_C0000002"]
+    graph.add((ordo_direct, RDF.type, OWL.Class))
+    graph.add((ordo_direct, RDFS.subClassOf, mod.MAKAAO.AutoimmunityRelatedDisease))
+    graph.add((cui_from_orpha, RDF.type, OWL.Class))
+    graph.add((cui_from_orpha, RDFS.subClassOf, mod.MAKAAO.CUI))
+    graph.add((cui_from_orpha, RDFS.subClassOf, mod.MAKAAO.AutoimmunityRelatedDisease))
+    graph.add((ordo_direct, SKOS.closeMatch, cui_from_orpha))
+    graph.add((cui_from_orpha, SKOS.closeMatch, ordo_direct))
+
+    # A closeMatch to a Target-only CUI is deliberately not an eligible disease edge.
+    target_cui = mod.MAKAAO["CUI_C0000003"]
+    target_instance = mod.MAKAAO["CUI_C0000003_instance"]
+    graph.add((target_cui, RDF.type, OWL.Class))
+    graph.add((target_cui, RDFS.subClassOf, mod.MAKAAO.CUI))
+    graph.add((target_instance, RDF.type, target_cui))
+    graph.add((target_instance, RDF.type, mod.MAKAAO.Target))
+    graph.add((ordo_direct, SKOS.closeMatch, target_cui))
+    graph.add((target_cui, SKOS.closeMatch, ordo_direct))
+
+    dictionary = tmp_path / "dico_MAI_strict.json"
+    dictionary.write_text(
+        json.dumps(
+            {
+                "CUI:C0000001": ["direct CUI disease"],
+                "ORPHA:456": ["direct ORPHA disease"],
+                "ORPHA:999": ["not present in this synthetic graph"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    strict_cuis, strict_orphas = mod.read_strict_autoimmune_disease_ids(dictionary)
+    assert strict_cuis == {"C0000001"}
+    assert strict_orphas == {"456", "999"}
+
+    result = mod.apply_strict_autoimmune_classification(
+        graph, strict_cuis, strict_orphas
+    )
+
+    assert (cui_direct, RDFS.subClassOf, mod.MAKAAO.AutoimmuneDisease) in graph
+    assert (ordo_from_cui, RDFS.subClassOf, mod.MAKAAO.AutoimmuneDisease) in graph
+    assert (ordo_direct, RDFS.subClassOf, mod.MAKAAO.AutoimmuneDisease) in graph
+    assert (cui_from_orpha, RDFS.subClassOf, mod.MAKAAO.AutoimmuneDisease) in graph
+    assert (target_cui, RDFS.subClassOf, mod.MAKAAO.AutoimmuneDisease) not in graph
+
+    assert len(result["direct_classes"]) == 2
+    assert len(result["propagated_classes"]) == 2
+    assert len(result["strict_classes"]) == 4
+    assert result["unmatched_orphas"] == {"999"}
+    assert not result["unmatched_cuis"]
+
+    malformed = tmp_path / "bad_strict_dictionary.json"
+    malformed.write_text(json.dumps({"SNOMED:123": ["bad key"]}), encoding="utf-8")
+    with pytest.raises(ValueError, match="expected CUI:... or ORPHA:..."):
+        mod.read_strict_autoimmune_disease_ids(malformed)
+
+
+
+def test_release_manifest_records_strict_autoimmune_curation(mod, tmp_path):
+    stage_root = tmp_path / "stage"
+    stage_reasoning = stage_root / "reasoning"
+    stage_reasoning.mkdir(parents=True)
+    stage_kg = stage_root / "makaao_kg_1.0.5.rdf"
+    stage_tbox = stage_root / "makaao_kg_1.0.5_ontology.owl"
+    root_catalog = stage_root / "catalog-imports.xml"
+    stage_kg.write_text("kg", encoding="utf-8")
+    stage_tbox.write_text("tbox", encoding="utf-8")
+    root_catalog.write_text("<catalog/>", encoding="utf-8")
+
+    manifest_path = stage_reasoning / "reasoning-manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "canonical_inputs": {
+                    "kg": {"sha256": mod._file_sha256(stage_kg)},
+                    "tbox": {"sha256": mod._file_sha256(stage_tbox)},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    curation = {
+        "source": "data/dico_MAI_strict.json",
+        "sha256": "abc123",
+        "entries": 177,
+        "direct_classes": 104,
+        "propagated_classes": 82,
+        "total_classes": 186,
+        "unmatched_entries": 73,
+    }
+
+    mod.finalize_release_manifest_and_checksums(
+        stage_root,
+        stage_reasoning,
+        stage_kg,
+        stage_tbox,
+        root_catalog,
+        curation,
+    )
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["strict_autoimmune_curation"] == curation
+    assert (stage_reasoning / "SHA256SUMS").is_file()

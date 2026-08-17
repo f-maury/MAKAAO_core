@@ -1,5 +1,5 @@
 [![87.50 % FAIR](https://img.shields.io/badge/FAIR_assessment-87.50_%25-green)](https://fair-checker.france-bioinformatique.fr/assessment/6a3cc8bf73c04470e997f4c4)
-![Version](https://img.shields.io/badge/version-1.0.3-blue) 
+![Version](https://img.shields.io/badge/version-1.0.5-blue) 
 [![codecov](https://codecov.io/gh/f-maury/MAKAAO_core/branch/main/graph/badge.svg)](https://codecov.io/gh/f-maury/MAKAAO_core)
 ![SHACL Validation](https://github.com/f-maury/MAKAAO_core/actions/workflows/shacl_validation.yml/badge.svg)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18228826.svg)](https://doi.org/10.5281/zenodo.18228826)
@@ -49,5 +49,8 @@ For licensing reasons, some files that you would need to correctly run the scrip
    * `data/LoincPartLink_Primary`, obtained from the LOINC (https://loinc.org/downloads)
    * Ontology files located in `data/external_ontologies`: BAO, Biolink, ChEBI, HPO, ORDO, PROV-O, SIO, SKOS, Uniprot.
    * `data/makaao_core.xlsx`
+   * `data/dico_MAI_strict.json`
 
 You need an Internet connection to run these scripts: when terminology labels associated to a terminology item cannot be locally found, an API will be queried for them.
+
+You also need to place the ROBOT tool (https://github.com/ontodev/robot) at the root of the project.
