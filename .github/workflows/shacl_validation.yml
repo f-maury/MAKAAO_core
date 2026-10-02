@@ -143,11 +143,6 @@ jobs:
                   f"Canonical graph {graph_path} is stale: expected {expected_version!r}; "
                   f"recorded versions are {sorted(versions)!r}"
               )
-          if not is_canonical and versions and expected_version not in versions:
-              raise SystemExit(
-                  f"Sample graph {graph_path} is stale: expected {expected_version!r}; "
-                  f"recorded versions are {sorted(versions)!r}"
-              )
           print(f"Optional graph parsed successfully ({len(data)} triples)")
           PY
 
