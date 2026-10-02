@@ -1,4 +1,5 @@
 from __future__ import annotations
+import pytest
 
 import ast
 import importlib.util
