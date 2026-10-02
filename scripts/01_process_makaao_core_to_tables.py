@@ -6,8 +6,8 @@ from typing import Iterable, List, Sequence, Tuple
 import pandas as pd
 
 # =========================== DEFINE PATHS ===========================
-#INP = Path("../data/makaao_core.csv")  # makaao core table
-INP = Path("../data/makaao_sample.csv")  # makaao sample
+INP = Path("../data/makaao_core.csv")  # makaao core table
+#INP = Path("../data/makaao_sample.csv")  # makaao sample
 OUT_DIR = Path("../data/processed_tables/")  # where we will store processed tables
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -47,22 +47,33 @@ def unique_preserve_order(items: Iterable[str]) -> List[str]:
     return out
 
 
-def to_pmid_urls(tokens: Sequence[str]) -> List[str]:
+def to_pmid_urls(tokens: Sequence[str], *, preserve_other: bool = False) -> List[str]:
     """
-    Normalize tokens into PubMed/HTTP URLs:
+    Normalize provenance tokens while preserving their meaning:
       - 'PMID: 12345' -> 'https://pubmed.ncbi.nlm.nih.gov/12345'
       - Keep tokens that already look like HTTP/HTTPS URLs.
+      - When ``preserve_other`` is true, retain any other non-empty source token
+        verbatim (for example HPO/CUI identifiers, DOI strings, or citations).
       - De-duplicate, order-preserving.
+
+    ``preserve_other=False`` retains the historical behavior used by the
+    relation-source tables whose output columns are specifically PMID fields.
+    Synonym provenance uses ``preserve_other=True`` so normalization is lossless.
     """
     out, seen = [], set()
     for tok in tokens:
+        tok = str(tok).strip()
+        if not tok:
+            continue
         m = pmid_rx.match(tok)
-        url = f"https://pubmed.ncbi.nlm.nih.gov/{m.group(1)}" if m else None
-        if not url and http_rx.match(tok):
-            url = tok
-        if url and url not in seen:
-            seen.add(url)
-            out.append(url)
+        source = f"https://pubmed.ncbi.nlm.nih.gov/{m.group(1)}" if m else None
+        if source is None and http_rx.match(tok):
+            source = tok
+        if source is None and preserve_other:
+            source = tok
+        if source is not None and source not in seen:
+            seen.add(source)
+            out.append(source)
     return out
 
 
@@ -157,6 +168,7 @@ def pair_values_and_sources_by_slot(
     idx_for_error: object = None,
     value_col_name: str = "values",
     source_col_name: str = "sources",
+    preserve_other_sources: bool = False,
 ) -> List[Tuple[str, str]]:
     """
     Align values and sources by '|' slots. Within each slot, split on ';'.
@@ -170,6 +182,8 @@ def pair_values_and_sources_by_slot(
     - A source slot may be empty => values from that slot get source="". If a source slot
       has multiple tokens (e.g., 'PMID:1;PMID:2'), each value in the paired value slot is
       emitted with each normalized source (Cartesian product).
+    - If ``preserve_other_sources`` is true, non-PMID/non-URL source tokens are
+      retained verbatim instead of being discarded.
     """
     v_slots = _split_slots(values_cell)
     s_slots = _split_slots(sources_cell)
@@ -206,7 +220,7 @@ def pair_values_and_sources_by_slot(
     for v_slot, s_slot in zip(v_slots, s_slots):
         values = _items_in_slot(v_slot)
         src_tokens = _items_in_slot(s_slot)
-        srcs = to_pmid_urls(src_tokens)
+        srcs = to_pmid_urls(src_tokens, preserve_other=preserve_other_sources)
         if not srcs:
             pairs.extend((v, "") for v in values)
         else:
@@ -327,6 +341,7 @@ def write_index_syn_en(df: pd.DataFrame, out_dir: Path) -> None:
             idx_for_error=idx,
             value_col_name="syn_en",
             source_col_name="syn_en_source",
+            preserve_other_sources=True,
         )
         # de-duplicate (value,source) while preserving order
         seen = set()
@@ -353,6 +368,7 @@ def write_index_syn_fr(df: pd.DataFrame, out_dir: Path) -> None:
             idx_for_error=idx,
             value_col_name="syn_fr",
             source_col_name="syn_fr_source",
+            preserve_other_sources=True,
         )
         seen = set()
         for v, s in pairs:

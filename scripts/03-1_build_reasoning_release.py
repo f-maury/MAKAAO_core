@@ -16,7 +16,8 @@ The reasoning modules retain:
 * safe literal annotations.
 
 Anonymous restrictions, RDF lists, n-ary axioms, and unresolved property-category
-overlap are intentionally excluded from this strict reasoning representation.
+overlap are excluded from the external modules. The MAKAAO schema itself contains
+no anonymous class expressions.
 """
 
 from __future__ import annotations
@@ -37,11 +38,12 @@ from typing import Any, Iterable, Sequence
 from xml.etree import ElementTree as ET
 
 from rdflib import BNode, Graph, Literal, Namespace, RDF, RDFS, OWL, URIRef
+from rdflib.compare import to_canonical_graph
 from rdflib.namespace import DCTERMS, SKOS, XSD
 
 
-SCRIPT_VERSION = "1.2.34"
-SCRIPT_ITERATION = "2026-08-15-readable-relation-source-occurrences"
+SCRIPT_VERSION = "1.2.36"
+SCRIPT_ITERATION = "2026-10-02-hpo-positivity-no-anonymous-axioms"
 
 PROV = Namespace("http://www.w3.org/ns/prov#")
 BIOLINK = Namespace("https://w3id.org/biolink/vocab/")
@@ -1868,6 +1870,56 @@ def run_reasoner(
 
 
 # check reasoner KG has original KG triples + inferred KG
+def canonicalize_blank_node_components(source: Graph) -> Graph:
+    """Give anonymous RDF structures stable labels independent of parsing.
+
+    Canonicalize each component connected through blank nodes, including its
+    named anchors. Separate component hashes prevent identifier collisions;
+    identical components coalesce. Named-only triples are copied unchanged.
+    Component-level labeling remains stable when unrelated named inferences
+    are added, so assertion restoration is also idempotent.
+    """
+    output = Graph()
+    output.namespace_manager = source.namespace_manager
+    triples_by_node: dict[BNode, set[tuple]] = {}
+    for triple in source:
+        blank_nodes = {node for node in triple if isinstance(node, BNode)}
+        if not blank_nodes:
+            output.add(triple)
+        for node in blank_nodes:
+            triples_by_node.setdefault(node, set()).add(triple)
+
+    remaining = set(triples_by_node)
+    while remaining:
+        component = Graph()
+        stack = [next(iter(remaining))]
+        visited = set()
+        while stack:
+            node = stack.pop()
+            if node in visited:
+                continue
+            visited.add(node)
+            for triple in triples_by_node[node]:
+                component.add(triple)
+                stack.extend(
+                    term for term in triple
+                    if isinstance(term, BNode) and term not in visited
+                )
+        remaining.difference_update(visited)
+        canonical = to_canonical_graph(component)
+        canonical_text = "".join(
+            sorted(canonical.serialize(format="nt").splitlines(keepends=True))
+        )
+        digest = hashlib.sha256(canonical_text.encode("utf-8")).hexdigest()
+        for triple in canonical:
+            output.add(tuple(
+                BNode(f"axiom_{digest}_{node}") if isinstance(node, BNode) else node
+                for node in triple
+            ))
+        component.close()
+    return output
+
+
 def preserve_asserted_axioms(
     asserted_path: Path,
     reasoned_path: Path,
@@ -1877,43 +1929,36 @@ def preserve_asserted_axioms(
     ROBOT's ``reason`` command may normalize a classified ontology by omitting
     asserted schema axioms that remain logically entailed.  The MAKAAO release
     contract is stricter: the retained reasoned file must contain every RDF
-    triple from the asserted DL input plus the inferred triples produced by the
-    reasoner.  The current strict release is named-node-only; blank-node axioms
-    are rejected here because their parser-local identifiers cannot support a
-    reliable triple-by-triple preservation check across serializations.
+    assertion from the asserted DL input plus the reasoner's inferred triples.
+    Anonymous structures are compared modulo blank-node renaming and duplicate
+    isomorphic components, rather than using parser-local identifiers.
     """
     asserted = Graph()
     reasoned = Graph()
     verified: Graph | None = None
+    normalized_asserted: Graph | None = None
+    normalized_reasoned: Graph | None = None
+    normalized_verified: Graph | None = None
     try:
         asserted.parse(str(asserted_path), format="xml")
         reasoned.parse(str(reasoned_path), format="xml")
 
-        asserted_blank_nodes = {
-            node
-            for triple in asserted
-            for node in triple
-            if isinstance(node, BNode)
-        }
-        reasoned_blank_nodes = {
-            node
-            for triple in reasoned
-            for node in triple
-            if isinstance(node, BNode)
-        }
-        if asserted_blank_nodes or reasoned_blank_nodes:
-            raise RuntimeError(
-                "Assertion-preserving reasoned publication requires named-node-only "
-                "graphs; blank nodes were found in the asserted or reasoned ontology"
-            )
-
         reasoner_output_triples = len(reasoned)
-        missing = [triple for triple in asserted if triple not in reasoned]
+        normalized_asserted = canonicalize_blank_node_components(asserted)
+        normalized_reasoned = canonicalize_blank_node_components(reasoned)
+        missing = [
+            triple for triple in normalized_asserted
+            if triple not in normalized_reasoned
+        ]
         for triple in missing:
-            reasoned.add(triple)
+            normalized_reasoned.add(triple)
 
-        verified = serialize_verified(reasoned, reasoned_path)
-        remaining = [triple for triple in asserted if triple not in verified]
+        verified = serialize_verified(normalized_reasoned, reasoned_path)
+        normalized_verified = canonicalize_blank_node_components(verified)
+        remaining = [
+            triple for triple in normalized_asserted
+            if triple not in normalized_verified
+        ]
         if remaining:
             preview = "\n  ".join(map(str, remaining[:20]))
             raise RuntimeError(
@@ -1923,6 +1968,7 @@ def preserve_asserted_axioms(
 
         return {
             "asserted_input_triples": len(asserted),
+            "asserted_triples_after_blank_node_canonicalization": len(normalized_asserted),
             "reasoner_output_triples_before_restore": reasoner_output_triples,
             "asserted_triples_restored": len(missing),
             "asserted_triples_missing_after_restore": len(remaining),
@@ -1933,6 +1979,9 @@ def preserve_asserted_axioms(
         reasoned.close()
         if verified is not None:
             verified.close()
+        for normalized in (normalized_asserted, normalized_reasoned, normalized_verified):
+            if normalized is not None:
+                normalized.close()
 
 # check reasoned graph : must have no reified relations, no imports
 def check_reasoned_output(path: Path) -> dict[str, Any]:
@@ -1985,8 +2034,8 @@ def extraction_policy() -> dict[str, Any]:
             "literal annotations on retained entities when the annotation predicate is not an object or datatype property",
         ],
         "excluded": [
-            "anonymous class expressions and owl:Restriction structures",
-            "RDF lists and n-ary OWL axiom structures",
+            "anonymous class expressions and owl:Restriction structures from external sources",
+            "RDF lists and n-ary OWL axiom structures from external sources",
             "property chains and keys",
             "URI-valued mapping annotations not required as logical axioms",
             "entities and ontology branches outside the generated KG signature and its named closure",
@@ -2154,6 +2203,9 @@ def build_reasoning_release(
     copy_without_headers_and_imports(merged_tbox, dl_graph)
     copy_without_headers_and_imports(non_reified_graph, dl_graph)
     dl_graph = remove_generic_reification(dl_graph)
+    # The TBox was reparsed after serialization; the input KG still has its
+    # original blank-node labels. Coalesce their identical anonymous axioms.
+    dl_graph = canonicalize_blank_node_components(dl_graph)
     add_reasoning_metadata_declarations(dl_graph)
     dl_iri = URIRef(f"http://makaao.inria.fr/kg/{kg_version}/curated-reasoning")
     dl_graph.add((dl_iri, RDF.type, OWL.Ontology))
@@ -2254,7 +2306,10 @@ def build_reasoning_release(
         "status": status,
         "design": {
             "module_set": "single strict module set built directly from pinned external ontology files",
-            "anonymous_logical_axioms_retained": False,
+            "anonymous_logical_axioms_retained": any(
+                isinstance(node, BNode) for triple in merged_tbox for node in triple
+            ),
+            "external_anonymous_logical_axioms_retained": False,
             "generic_rdf_reification_retained_in_dl_graph": False,
             "asserted_dl_triples_preserved_in_reasoned_graph": (
                 assertion_preservation["asserted_triples_missing_after_restore"] == 0

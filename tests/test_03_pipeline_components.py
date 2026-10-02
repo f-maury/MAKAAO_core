@@ -171,17 +171,49 @@ def test_synthetic_processed_table_components_metadata_and_tbox(
         {"CHEBI:23367": "http://purl.obolibrary.org/obo/CHEBI_23367"},
     )
 
+    # Autoantibody 1 maps to two HPO positivity classes. Each mapped HPO class
+    # is used directly (no local positivity class, no local/HPO closeMatch),
+    # with one positivity individual per HPO class.
     aab_instance = mod.MAKAAO["aab_1_instance"]
-    positivity_class = mod.MAKAAO["positivity_1"]
-    positivity_instance = mod.MAKAAO["positivity_1_instance"]
     hpo_class = URIRef("http://purl.obolibrary.org/obo/HP_0000001")
+    hpo_class_2 = URIRef("http://purl.obolibrary.org/obo/HP_0000002")
+    positivity_instance = mod.MAKAAO["positivity_1_HP_0000001_instance"]
+    positivity_instance_2 = mod.MAKAAO["positivity_1_HP_0000002_instance"]
     assert positivity_instances_by_hpo["HP:0000001"] == (positivity_instance,)
-    assert (positivity_instance, RDF.type, positivity_class) in graph
-    assert (positivity_instance, RDF.type, hpo_class) not in graph
-    assert (positivity_class, SKOS.closeMatch, hpo_class) in graph
-    assert (hpo_class, SKOS.closeMatch, positivity_class) in graph
-    assert (aab_instance, mod.BIOLINK.biomarker_for, positivity_instance) in graph
-    assert (positivity_instance, mod.BIOLINK.has_biomarker, aab_instance) in graph
+    assert positivity_instances_by_hpo["HP:0000002"] == (positivity_instance_2,)
+    assert not list(graph.triples((mod.MAKAAO["positivity_1"], None, None)))
+    assert not list(graph.triples((None, None, mod.MAKAAO["positivity_1"])))
+    for instance, hpo in ((positivity_instance, hpo_class), (positivity_instance_2, hpo_class_2)):
+        assert set(graph.objects(instance, RDF.type)) == {
+            hpo,
+            mod.BIOLINK.PhenotypicFeature,
+        }
+        assert (aab_instance, mod.BIOLINK.biomarker_for, instance) in graph
+        assert (instance, mod.BIOLINK.has_biomarker, aab_instance) in graph
+        assert not list(graph.triples((None, SKOS.closeMatch, hpo)))
+        assert not list(graph.triples((hpo, RDFS.subClassOf, None)))
+
+    # The root autoantibody (18) is linked to HP:0030057 itself.
+    root_positivity = mod.MAKAAO["positivity_18_instance"]
+    assert (root_positivity, RDF.type, mod.HPO_AUTOIMMUNE_ANTIBODY_POSITIVITY) in graph
+    assert (
+        mod.MAKAAO["aab_18_instance"], mod.BIOLINK.biomarker_for, root_positivity
+    ) in graph
+
+    # Autoantibody 2 has no HPO class, so a positivity class is created. Its
+    # parent (1) maps to two alternative HPO classes, which cannot be used as
+    # superclasses, so the created class is placed directly below HP:0030057.
+    created = mod.MAKAAO["positivity_2"]
+    assert (created, RDF.type, OWL.Class) in graph
+    assert (mod.MAKAAO["positivity_2_instance"], RDF.type, created) in graph
+    assert set(graph.objects(created, RDFS.subClassOf)) == {
+        mod.HPO_AUTOIMMUNE_ANTIBODY_POSITIVITY
+    }
+
+    # The KG contains no anonymous OWL class expressions.
+    assert not list(graph.subjects(RDF.type, OWL.Restriction))
+    for predicate in (OWL.unionOf, OWL.intersectionOf, OWL.complementOf):
+        assert not list(graph.triples((None, predicate, None)))
 
     ordo = URIRef("http://www.orpha.net/ORDO/Orphanet_123")
     orpha_links = {
@@ -216,6 +248,9 @@ def test_synthetic_processed_table_components_metadata_and_tbox(
     assert (free_disease_instance, RDF.type, mod.MAKAAO.AutoimmunityRelatedDisease) in graph
     assert (orpha_instance, mod.SIO["SIO_001279"], positivity_instance) in graph
     assert (positivity_instance, mod.SIO["SIO_001280"], orpha_instance) in graph
+    # Orphadata lists only HP:0000001 for this disease, so the disease is not
+    # linked to the individual of the autoantibody's other HPO class.
+    assert (orpha_instance, mod.SIO["SIO_001279"], positivity_instance_2) not in graph
     assert not list(
         graph.triples((mod.MAKAAO["hpo_HP_0000001_instance"], None, None))
     )
@@ -331,6 +366,75 @@ def test_synthetic_processed_table_components_metadata_and_tbox(
     mod.validate_tbox_export(tbox)
     mod.validate_graph_iris(graph, "synthetic assembled KG")
     assert mod.validate_local_cui_labels(graph) >= 4
+
+
+def test_created_positivity_classes_follow_autoantibody_hierarchy(
+    mod, tmp_path, capsys
+):
+    """A positivity class is created only when no HPO positivity class exists.
+
+    It is placed below the positivity class of each parent autoantibody (an
+    HPO class or another created class) and is a direct subclass of
+    HP:0030057 only when no parent provides a positivity class.
+    """
+    processed = tmp_path / "processed"
+    processed.mkdir()
+    names = {
+        "18": "Autoantibody",
+        "1": "B antibody",          # mapped to one HPO class
+        "2": "A antibody",          # child of 1, no HPO class
+        "3": "A1 antibody",         # child of 2, no HPO class
+        "4": "C antibody",          # child of the root, no HPO class
+        "5": "D antibody",          # children of the root and of 1, no HPO class
+        "6": "E antibody",          # mapped to two alternative HPO classes
+        "7": "E1 antibody",         # child of 6, no HPO class
+        "8": "F antibody",          # child of 1, own HPO class
+    }
+    parents = [("1", "18"), ("2", "1"), ("3", "2"), ("4", "18"), ("5", "18"),
+               ("5", "1"), ("6", "18"), ("7", "6"), ("8", "1")]
+    hpo = [("1", "HP:0000010"), ("6", "HP:0000011 | HP:0000012"), ("8", "HP:0000013")]
+    write_csv(processed / "index_name_en.csv", ["index", "name_en"],
+              [{"index": i, "name_en": n} for i, n in names.items()])
+    write_csv(processed / "index_parent_index.csv", ["index", "parent_index"],
+              [{"index": c, "parent_index": p} for c, p in parents])
+    write_csv(processed / "index_hpo_id.csv", ["index", "hpo_id"],
+              [{"index": i, "hpo_id": h} for i, h in hpo])
+    for filename, columns in (
+        ("index_syn_source_en.csv", ["index", "syns_en", "syns_en_source"]),
+        ("index_syn_source_fr.csv", ["index", "syns_fr", "syns_fr_source"]),
+        ("index_cui_source.csv", ["index", "umls_target_cui", "umls_pmids"]),
+        ("index_uniprot_source.csv", ["index", "uniprot_target_id", "uniprot_pmids"]),
+        ("index_chebi_source.csv", ["index", "chebi_target_id", "chebi_pmids"]),
+        ("index_disease_source.csv", ["index", "related_diseases_id", "diseases_pmids"]),
+    ):
+        write_csv(processed / filename, columns, [])
+
+    data = mod.load_processed_tables(str(processed))
+    graph = mod.init_graph()
+    mod.build_core(graph, data, {}, {}, {}, {}, {}, {}, {})
+
+    def hp(code):
+        return URIRef(f"http://purl.obolibrary.org/obo/HP_{code}")
+
+    def superclasses(idx):
+        return set(graph.objects(mod.MAKAAO[f"positivity_{idx}"], RDFS.subClassOf))
+
+    root = mod.HPO_AUTOIMMUNE_ANTIBODY_POSITIVITY
+    assert superclasses("2") == {hp("0000010")}        # below "B positivity", not root
+    assert superclasses("3") == {mod.MAKAAO["positivity_2"]}  # created below created
+    assert superclasses("4") == {root}                 # parent is the root
+    assert superclasses("5") == {hp("0000010")}        # root dropped when B exists
+    assert superclasses("7") == {root}                 # alternatives cannot be parents
+    assert "positivity_7: parent autoantibody 6" in capsys.readouterr().out
+
+    # Autoantibodies with HPO classes get no created class, and HPO classes
+    # keep their own hierarchy: no subclass axiom is added to them.
+    for idx in ("1", "6", "8"):
+        assert not list(graph.triples((mod.MAKAAO[f"positivity_{idx}"], None, None)))
+    for code in ("0000010", "0000011", "0000012", "0000013"):
+        assert not list(graph.triples((hp(code), RDFS.subClassOf, None)))
+    assert not list(graph.subjects(RDF.type, OWL.Restriction))
+    assert not list(graph.triples((None, OWL.unionOf, None)))
 
 
 def test_csv_and_identifier_error_paths(mod, tmp_path):

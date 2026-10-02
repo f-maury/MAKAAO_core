@@ -1,0 +1,1053 @@
+{
+  "CUI:C0001169": [
+    "déficience en facteur de coagulation acquise"
+  ],
+  "ORPHA:85138": [
+    "Maladie d'Addison",
+    "Maladie d'Addison auto-immune",
+    "Maladie d'Addison classique",
+    "Maladie d'Addison primaire",
+    "hypocorticisme primitif",
+    "insuffisance corticosurrénale primitive",
+    "insuffisance corticosurrénalienne primitive",
+    "insuffisance surrénale lente",
+    "insuffisance surrénale primitive",
+    "insuffisance surrénalienne primitive",
+    "maladie bronzée",
+    "maladie d'addison"
+  ],
+  "ORPHA:98375": [
+    "AHA",
+    "AHAI",
+    "AIHA",
+    "Anémie hémolytique auto-immune",
+    "ahai",
+    "ahlai",
+    "anémie hémolytique auto immune sai",
+    "anémie hémolytique auto-immune",
+    "anémie hémolytique auto-immune sai",
+    "anémie hémolytique autoimmune",
+    "anémies hémolytiques autoimmunes"
+  ],
+  "CUI:C0003873": [
+    "arthrite d",
+    "arthrite rhumatoïde systémique",
+    "polyarthrite chronique évolutive",
+    "polyarthrite rh",
+    "polyarthrite rhumatismale",
+    "polyarthrite rhumatoïde"
+  ],
+  "CUI:C0007570": [
+    "entéropathie au gluten",
+    "entéropathie chronique liée à une intolérance au gluten",
+    "entéropathie par sensibilité au gluten",
+    "maladie coeliaque",
+    "maladie céliaque",
+    "maladie de gee",
+    "sprue",
+    "sprue coeliaque",
+    "sprue non tropicale",
+    "sprue nostras",
+    "syndrome caeliaque par intolérance au gluten"
+  ],
+  "ORPHA:186": [
+    "CBP",
+    "Cholangite biliaire primitive",
+    "Cirrhose biliaire primitive",
+    "Syndrome de Hanot",
+    "cholangite biliaire primitive",
+    "cholangite destructive chronique non suppurative",
+    "cholangite destructrice chronique non suppurative",
+    "cholangite destructrice non suppurée chronique",
+    "cirrhose biliaire primitive",
+    "cirrhose de hanot",
+    "maladie de hanot",
+    "syndrome de hanot"
+  ],
+  "CUI:C0009326": [
+    "collagénose sai",
+    "collagénoses",
+    "connectivites",
+    "maladies du collagène",
+    "trouble du collagène",
+    "trouble du collagène sai"
+  ],
+  "CUI:C0009782": [
+    "affections du tissu conjonctif nca",
+    "anomalies du tissu conjonctif ou connectivites",
+    "connectivite sai",
+    "maladies du tissu conjonctif",
+    "trouble du tissu conjonctif"
+  ],
+  "ORPHA:1656": [
+    "Dermatite herpétiforme",
+    "Maladie de Duhring-Brocq",
+    "dermatite herpétiforme",
+    "dermatite herpétiforme de dühring",
+    "maladie de duhring-brocq"
+  ],
+  "ORPHA:801": [
+    "Sclérodermie",
+    "sclérodermie"
+  ],
+  "CUI:C0011854": [
+    "apparition juvénile de diabète sucré",
+    "diabète de type 1",
+    "diabète de type i",
+    "diabète instable",
+    "diabète insulino-dépendant",
+    "diabète insulinodépendant",
+    "diabète juvénile",
+    "diabète sucré de type 1",
+    "diabète sucré de type i",
+    "diabète sucré insulino-dépendant",
+    "diabète sucré insulinodépendant",
+    "diabète à médiation immunitaire",
+    "diabétique insulinodépendant",
+    "did1",
+    "dsid"
+  ],
+  "ORPHA:2103": [
+    "SGB",
+    "Syndrome de Guillain-Barré",
+    "Syndrome de Guillain-Barré-Strohl",
+    "polyradiculonévrite aiguë inflammatoire",
+    "polyradiculonévrite de guillain-barré",
+    "polyradiculonévrite démyélinisante inflammatoire aiguë",
+    "polyradiculonévrite démyélinisante inflammatoire aigüe",
+    "syndrome de guillain-barré",
+    "syndrome de landry-guillain-barré"
+  ],
+  "ORPHA:43393": [
+    "Syndrome myasthénique de Lambert-Eaton",
+    "syndrome de lambert-eaton",
+    "syndrome myasthénique d'eaton-lambert",
+    "syndrome myasthénique de lambert-eaton"
+  ],
+  "ORPHA:163525": [
+    "Lupus érythémateux cutané subaigu",
+    "lupus érythémateux cutané subaigu"
+  ],
+  "ORPHA:536": [
+    "LEAD",
+    "LES",
+    "Lupus systémique",
+    "Lupus érythémateux aigu disséminé",
+    "Lupus érythémateux disséminé",
+    "Lupus érythémateux systémique",
+    "SLE",
+    "le systémique",
+    "lupus érythémateux disséminé",
+    "lupus érythémateux généralisé",
+    "lupus érythémateux systémique",
+    "syndr de lupus érythémateux systémique",
+    "syndrome de lupus érythémateux disséminé",
+    "syndrome du le",
+    "syndrome lupique"
+  ],
+  "CUI:C0024143": [
+    "glomérulonéphrite lupique",
+    "lupus érythémateux systémique avec atteinte rénale",
+    "néphrite de type lupique",
+    "néphrite liée au les",
+    "néphrite lupique",
+    "néphropathie lupique"
+  ],
+  "ORPHA:809": [
+    "Connectivite mixte",
+    "Syndrome de Sharp",
+    "connectivite mixte",
+    "mctd",
+    "syndrome de sharp"
+  ],
+  "CUI:C0026769": [
+    "sclérose disséminée",
+    "sclérose en plaque",
+    "sclérose en plaques"
+  ],
+  "ORPHA:589": [
+    "Myasthenia gravis",
+    "Myasthénie acquise",
+    "Myasthénie auto-immune",
+    "myasthénie",
+    "myasthénie auto-immune",
+    "myasthénie autoimmune",
+    "myasthénie grave",
+    "myasthénie grave pseudoparalytique"
+  ],
+  "ORPHA:46486": [
+    "Pemphigoïde cicatricielle",
+    "Pemphigoïde des membranes muqueuses",
+    "Pemphigoïde des muqueuses",
+    "Pemphigoïde mucosynechiante",
+    "conjonctivite mucosynéchiante",
+    "dermatite mucosynéchiante de lortat-jacob",
+    "pemphigoïde bénigne des muqueuses",
+    "pemphigoïde cicatricielle",
+    "pemphigoïde des muqueuses",
+    "pemphigus oculaire"
+  ],
+  "ORPHA:703": [
+    "Pemphigoïde bulleuse",
+    "pemphigoïde",
+    "pemphigoïde bulleuse",
+    "pemphigoïde bulleuse sai"
+  ],
+  "CUI:C0030807": [
+    "pemphigus"
+  ],
+  "ORPHA:704": [
+    "Pemphigus profond",
+    "Pemphigus vulgaire",
+    "pemphigus vulgaire",
+    "pemphigus vulgaris"
+  ],
+  "ORPHA:49041": [
+    "Fibrose rétropéritonéale associée à IgG4",
+    "Fibrose rétropéritonéale idiopathique",
+    "Maladie d'Ormond",
+    "Maladie systémique liée à la présence d'anticorps IgG4",
+    "fibrose rétro-péritonéal",
+    "fibrose rétropéritonéale",
+    "maladie d'ormond"
+  ],
+  "CUI:C0038013": [
+    "cyphose hérédotraumatique",
+    "maladie de bechterew",
+    "maladie de marie-strümpell",
+    "pelvi-spondylite rhumatismale",
+    "pelvispondylite rhumatismale",
+    "spond des chevilles",
+    "spondylarthrite ankylosante",
+    "spondylarthrite rhumatoïde ankylosante",
+    "spondylite ankylopoïétique"
+  ],
+  "CUI:C0039263": [
+    "artérite de takayasu",
+    "artérite oblitérante de takayashu",
+    "maladie de takayashu",
+    "maladie de takayasu",
+    "maladie des femmes sans pouls"
+  ],
+  "ORPHA:46487": [
+    "Epidermolyse bulleuse acquise",
+    "Epidermolysis bullosa acquisita",
+    "epidermolysis bullosa aquisita",
+    "épidermolyse bulleuse acquise"
+  ],
+  "ORPHA:80": [
+    "SAPL",
+    "SAPL classique",
+    "Syndrome de Hughes",
+    "Syndrome des anticorps antiphospholipides",
+    "Syndrome des antiphospholipides",
+    "Syndrome des antiphospholipides classique",
+    "syndrome de soulier",
+    "syndrome des anticorps antiphospholipides",
+    "syndrome des antiphospholipides"
+  ],
+  "ORPHA:3453": [
+    "APS type 1",
+    "APS1",
+    "Polyendocrinopathie auto-immune type 1",
+    "Syndrome APECED",
+    "Syndrome HAM",
+    "Syndrome MEDAC",
+    "Syndrome d'hypoparathyroïdie auto-immune-candidose chronique-maladie d'Addison",
+    "Syndrome de déficit endocrinien multiple-maladie d'Addison-candidose",
+    "Syndrome de polyendocrinopathie auto-immune-candidose-dystrophie ectodermique",
+    "Syndrome polyglandulaire auto-immun type 1",
+    "polyendocrinopathie auto-immune de type 1",
+    "polyendocrinopathie auto-immune de type i",
+    "polyendocrinopathie autoimmune de type 1",
+    "polyendocrinopathie autoimmune de type i"
+  ],
+  "ORPHA:3143": [
+    "APS type 2",
+    "APS2",
+    "Polyendocrinopathie auto-immune type 2",
+    "Syndrome de Schmidt",
+    "Syndrome de maladie auto-immune de la thyroïde et/ou diabète de type 1-maladie d'Addison",
+    "Syndrome polyglandulaire auto-immun type 2",
+    "polyendocrinopathie auto-immune de type 2",
+    "polyendocrinopathie auto-immune de type ii",
+    "polyendocrinopathie autoimmune de type 2",
+    "polyendocrinopathie autoimmune de type ii",
+    "syndrome de schmidt",
+    "syndrome polyglandulaire auto-immun type 2"
+  ],
+  "ORPHA:97560": [
+    "Glomérulonéphrite extra membraneuse primitive",
+    "Glomérulonéphrite extra-membraneuse idiopathique",
+    "Néphropathie extra-membraneuse primitive",
+    "glomérulonéphrite extramembraneuse idiopathique"
+  ],
+  "ORPHA:90035": [
+    "Anémie hémolytique de Donath-Landsteiner",
+    "Hémoglobinurie paroxystique a frigore",
+    "Hémoglobinurie paroxystique induite par le froid",
+    "PCH",
+    "Syndrome de Donath-Landsteiner",
+    "hémoglobinurie paroxystique a frigore",
+    "hémoglobinurie paroxystique essentielle",
+    "maladie de harley"
+  ],
+  "CUI:C0206139": [
+    "lichen plan buccal",
+    "lichen plan de la cavité buccale",
+    "lichen plan oral"
+  ],
+  "ORPHA:79481": [
+    "Pemphigus foliacé",
+    "pemphigus foliaceus",
+    "pemphigus foliacé"
+  ],
+  "ORPHA:231111": [
+    "DILE",
+    "Lupus érythémateux induit par les médicaments",
+    "lupus érythémateux d'origine médicamenteuse"
+  ],
+  "ORPHA:36913": [
+    "Hypoparathyroïdie auto-immune",
+    "hypoparathyroïdie auto-immune"
+  ],
+  "ORPHA:90033": [
+    "AIHA chaude",
+    "Anémie hémolytique auto-immune à auto-anticorps chauds",
+    "anémie hémolytique auto-immune à anticorps chauds",
+    "anémie hémolytique auto-immune à autoanticorps chauds",
+    "anémie hémolytique de type chaud",
+    "anémie hémolytique à anticorps chauds",
+    "wAHA",
+    "wAIHA"
+  ],
+  "ORPHA:37042": [
+    "Entéropathie auto-immune de type 1",
+    "IPEX",
+    "Syndrome de dérèglement immunitaire-polyendocrinopathie-entéropathie lié à l'X"
+  ],
+  "ORPHA:95506": [
+    "Hypophysite auto-immune",
+    "Hypophysite primitive",
+    "hypophysite auto-immune",
+    "hypophysite lymphocytaire"
+  ],
+  "ORPHA:93126": [
+    "Glomérulonéphrite pauci-immune",
+    "glomérulonéphrite pauci-immune"
+  ],
+  "ORPHA:623626": [
+    "Ataxie cérébelleuse paranéoplasique",
+    "Ataxie cérébelleuse à progression rapide",
+    "Dégénérescence cérébelleuse paranéoplasique",
+    "Dégénérescence cérébelleuse subaiguë",
+    "Syndrome cérébelleux à progression rapide",
+    "dégénérescence cérébelleuse paranéoplasique"
+  ],
+  "ORPHA:98919": [
+    "Syndrome de Fisher",
+    "Syndrome de Miller Fisher",
+    "Variant crânien du SGB",
+    "Variant crânien du syndrome de Guillain-Barré",
+    "syndrome de fisher",
+    "syndrome de guillain-barré variante miller-fisher",
+    "syndrome de miller-fisher",
+    "variante miller-fisher du syndrome de guillain-barré"
+  ],
+  "ORPHA:2932": [
+    "Polyradiculonévrite inflammatoire démyélinisante chronique",
+    "cidp",
+    "pidc",
+    "polyneuropathie démyélinisante inflammatoire chronique",
+    "polyradiculoneuropathie chronique inflammatoire démyélinisante",
+    "polyradiculoneuropathie inflammatoire démyélinisante chronique",
+    "polyradiculonévrite inflammatoire démyélinisante chronique"
+  ],
+  "ORPHA:3002": [
+    "Purpura thrombopénique immunologique",
+    "TPI",
+    "Thrombocytopénie immune",
+    "Thrombopénie immune",
+    "maladie de werlhof",
+    "ptai",
+    "purpura idiopathique",
+    "purpura thrombocytopénique auto-immun",
+    "purpura thrombocytopénique autoimmun",
+    "purpura thrombocytopénique idiopathique",
+    "purpura thrombopénique auto-immun",
+    "purpura thrombopénique autoimmun",
+    "purpura thrombopénique idiopathique",
+    "purpura thrombopénique idiopathique de werlhof",
+    "purpura thrombopénique immunologique",
+    "syndrome de werlhof",
+    "thrombopénie immunitaire primaire"
+  ],
+  "ORPHA:375": [
+    "Glomérulonéphrite médiate anti-GBM",
+    "Maladie des anticorps anti-membrane basale glomérulaire",
+    "Maladie à anticorps anti-GBM",
+    "glomérulonéphrite extracapillaire par anticorps antimembrane basale glomérulaire",
+    "maladie avec anticorps antimembrane basale glomérulaire",
+    "maladie des anticorps antimembrane basale glomérulaire",
+    "maladie par auto-anticorps anti-membrane basale glomérulaire",
+    "maladie à anticorps anti-gbm",
+    "maladie à anticorps anti-membrane basale",
+    "maladie à anticorps antimembrane basale glomérulaire",
+    "syndrome de goodpasture"
+  ],
+  "ORPHA:46488": [
+    "Dermatose à IgA linéaire",
+    "dermatose bulleuse linéaire à iga",
+    "dermatose bulleuse à dépôts linéaires d'iga",
+    "dermatose bulleuse à iga linéaire",
+    "dermatose linéaire à iga",
+    "dermatose à dépôts linéaires d'iga",
+    "dermatose à iga linéaire",
+    "iga linéaire",
+    "maladie par dépôts linéaires d'iga"
+  ],
+  "ORPHA:171": [
+    "Cholangite sclérosante primitive",
+    "PSC",
+    "cholangite sclérosante primitive"
+  ],
+  "CUI:C0677607": [
+    "maladie d'hashimoto",
+    "maladie de hashimoto",
+    "thyroidite lymphocytaire de hashimoto",
+    "thyroïdite chronique de hashimoto",
+    "thyroïdite chronique lymphocytaire",
+    "thyroïdite d'hashimoto",
+    "thyroïdite de hashimoto",
+    "thyroïdite lymphocytaire",
+    "thyroïdite lymphocytaire chronique"
+  ],
+  "ORPHA:98482": [
+    "IMM",
+    "MII",
+    "Myopathie inflammatoire idiopathique",
+    "Myosite inflammatoire idiopathique",
+    "myopathie inflammatoire idiopathique",
+    "myopathies inflammatoires idiopathiques"
+  ],
+  "ORPHA:36388": [
+    "PNS",
+    "Syndrome neurologique paranéoplasique",
+    "syndromes neurologiques paranéoplasiques",
+    "syndromes paranéoplasiques neurologiques"
+  ],
+  "ORPHA:411593": [
+    "Maladie d'Hirata",
+    "Syndrome hypoglycémique auto-immun",
+    "syndrome hypoglycémique auto-immun"
+  ],
+  "ORPHA:63455": [
+    "Pemphigus paranéoplasique",
+    "pemphigus paranéoplasique"
+  ],
+  "ORPHA:3261": [
+    "ALPS",
+    "SLAI",
+    "Syndrome de Canale-Smith",
+    "Syndrome lymphoprolifératif auto-immun",
+    "Syndrome lymphoprolifératif avec auto-immunité",
+    "slpa",
+    "syndrome de canale-smith",
+    "syndrome lymphoprolifératif auto-immun",
+    "syndrome lymphoprolifératif avec auto-immunité",
+    "syndrome lymphoprolifératif avec autoimmunité"
+  ],
+  "CUI:C1527336": [
+    "maladie de sjögren",
+    "sjögren",
+    "syndrome arthro-oculo-salivaire",
+    "syndrome de gougerot-mulock-houwer",
+    "syndrome de gougerot-sjögren",
+    "syndrome de sjögren"
+  ],
+  "ORPHA:227982": [
+    "APS type 3",
+    "APS3",
+    "Polyendocrinopathie auto-immune type 3",
+    "Syndrome polyglandulaire auto-immun type 3",
+    "polyendocrinopathie auto-immune de type iii"
+  ],
+  "ORPHA:639": [
+    "Neuropathie anti-MAG",
+    "Neuropathie associée à une IgM monoclonale anti-MAG",
+    "Neuropathie associée à une IgM monoclonale anti-glycoprotéine associée à la myéline",
+    "Polyneuropathie associée à une gammopathie monoclonale IgM",
+    "Polyneuropathie associée à une gammopathie monoclonale IgM ayant une activité anti-MAG",
+    "neuropathie anti-mag"
+  ],
+  "CUI:C1740821": [
+    "diabète insulinodépendant à évolution lente"
+  ],
+  "ORPHA:79138": [
+    "Rhombencéphalite de Bickerstaff",
+    "Rhombencéphalite postinfectieuse de Bickerstaff",
+    "Syndrome de Bickerstaff",
+    "encéphalite de bickerstaff's",
+    "encéphalite du tronc cérébral de bickerstaff"
+  ],
+  "ORPHA:747": [
+    "PAP auto-immune",
+    "Protéinose alvéolaire pulmonaire auto-immune",
+    "aPAP",
+    "protéinose alvéolaire pulmonaire auto-immune"
+  ],
+  "ORPHA:81": [
+    "Syndrome anti-Jo1",
+    "Syndrome des antisynthétases",
+    "syndrome des antisynthétases"
+  ],
+  "ORPHA:103919": [
+    "AIP",
+    "Pancréatite auto-immune",
+    "pancréatite auto-immune"
+  ],
+  "ORPHA:156152": [
+    "AAV",
+    "Vascularite associée aux ANCA",
+    "Vascularite associée aux anticorps antineutrophiles cytoplasmiques",
+    "Vascularite pauci-immune à ANCA",
+    "vascularite associée aux anca",
+    "vascularites anca+",
+    "vascularites anca-positives",
+    "vascularites associées aux anca",
+    "vascularites associées aux anticorps anti-cytoplasme des neutrophiles",
+    "vascularites associées aux anticorps anti-cytoplasme des polynucléaires neutrophiles",
+    "vascularites pauci-immunes"
+  ],
+  "ORPHA:1929": [
+    "Encéphalite focale de Rasmussen",
+    "Syndrome de Rasmussen",
+    "encéphalite focale chronique"
+  ],
+  "ORPHA:66624": [
+    "PANDAS",
+    "Trouble neuropsychiatrique auto-immun par infection à streptocoques",
+    "pandas",
+    "troubles neuropsychiatriques auto-immuns pédiatriques associés à une infection à streptocoques"
+  ],
+  "ORPHA:2134": [
+    "SHU atypique",
+    "SHUa",
+    "Syndrome hémolytique et urémique atypique",
+    "shu atypique",
+    "shu non lié à une toxine de type shiga",
+    "shua",
+    "suh atypique",
+    "syndrome hémolytique et urémique atypique"
+  ],
+  "CUI:C3203657": [
+    "rétinopathie auto-immune"
+  ],
+  "ORPHA:206569": [
+    "Myopathie nécrosante à médiation auto-immune",
+    "Myosite nécrosante auto-immune",
+    "myopathie nécrosante à médiation immunitaire"
+  ],
+  "ORPHA:464343": [
+    "CAPS",
+    "Syndrome catastrophique des antiphospholipides",
+    "syndrome catastrophique des antiphospholipides"
+  ],
+  "ORPHA:83467": [
+    "Chorée fibrillaire de Morvan",
+    "Syndrome d'encéphalite limbique-neuromyotonie-hyperhidrose-polyneuropathie",
+    "Syndrome de Morvan",
+    "maladie de morvan",
+    "panaris analgésique",
+    "panaris de morvan",
+    "syndrome de morvan"
+  ],
+  "CUI:C3887639": [
+    "gastrite auto-immune"
+  ],
+  "CUI:C4046049": [
+    "syndrome des anticorps anti-pit-1"
+  ],
+  "ORPHA:90280": [
+    "Lupus érythémateux type Chilblain",
+    "lupus engelure",
+    "lupus pernio"
+  ],
+  "ORPHA:2137": [
+    "HAI",
+    "Hépatite auto-immune",
+    "hépatite auto-immune"
+  ],
+  "ORPHA:306431": [
+    "Déficit immunitaire acquis de l'adulte",
+    "Déficit immunitaire de l'adulte avec autoanticorps anti-interféron-gamma",
+    "Déficit immunitaire de l'adulte avec autoanticorps anti-interféron-gamma acquis",
+    "déficit immunitaire de l'adulte avec autoanticorps anti-interféron gamma"
+  ],
+  "CUI:C5243951": [
+    "maladie bulleuse auto-immune"
+  ],
+  "ORPHA:622014": [
+    "EA",
+    "EAI",
+    "Encéphalite auto-immune",
+    "encéphalite allergique",
+    "encéphalite auto-immune",
+    "encéphalopathie auto-immune"
+  ],
+  "CUI:C5671289": [
+    "encéphalite allergique",
+    "encéphalite auto-immune",
+    "encéphalopathie auto-immune"
+  ],
+  "ORPHA:206572": [
+    "Myosite de chevauchement",
+    "Myosite de chevauchement de l'adulte",
+    "Myosite non spécifique"
+  ],
+  "ORPHA:217253": [
+    "Encéphalite NMDAr",
+    "Encéphalite anti-NMDAr",
+    "Encéphalite limbique avec anticorps anti-récepteur N-méthyl-D-aspartate",
+    "Encéphalite limbique avec anticorps anti-récepteur NMDA",
+    "Encéphalite limbique à anticorps anti-NMDAr",
+    "Encéphalite à anticorps anti-récepteur au N-méthyl-D-aspartate",
+    "Encéphalite à anticorps antirécepteur NMDA"
+  ],
+  "ORPHA:227990": [
+    "APS type 4",
+    "APS4",
+    "Polyendocrinopathie auto-immune type 4"
+  ],
+  "ORPHA:228426": [
+    "Maladie auto-immune multisystémique syndromique par déficit en Itch"
+  ],
+  "ORPHA:2298": [
+    "Syndrome d'insulino-résistance type B"
+  ],
+  "ORPHA:289390": [
+    "Syndrome de Gougerot-Sjögren primaire",
+    "Syndrome de Gougerot-Sjögren primitif",
+    "Syndrome de Sjögren primaire",
+    "Syndrome de Sjögren primitif"
+  ],
+  "ORPHA:391487": [
+    "Syndrome d'entéropathie et endocrinopathie auto-immunes-susceptibilité aux infections chroniques associé à STAT1"
+  ],
+  "ORPHA:420789": [
+    "Encéphalopathie auto-immune avec parasomnie et apnée obstructive du sommeil",
+    "Syndrome anti-IgLON5"
+  ],
+  "ORPHA:449400": [
+    "Aortite associée à IgG4",
+    "Maladie systémique liée à la présence d'anticorps IgG4"
+  ],
+  "ORPHA:454710": [
+    "Pemphigoïde anti-p200"
+  ],
+  "ORPHA:522037": [
+    "Entéropathie autoimmune primitive"
+  ],
+  "ORPHA:525731": [
+    "Maladie de Basedow à début pédiatrique",
+    "Maladie de Graves à début pédiatrique"
+  ],
+  "ORPHA:562639": [
+    "Sydrome de chevauchement de HAI avec CBP/CSP",
+    "Syndrome de chevauchement d'hépatite auto-immune avec cirrhose biliaire primitive/cholangite sclérosante primitive",
+    "Syndrome de chevauchement des maladies hépatiques auto-immunes"
+  ],
+  "ORPHA:563576": [
+    "HAI type 1",
+    "Hépatite auto-immune",
+    "Hépatite auto-immune type 1"
+  ],
+  "ORPHA:563581": [
+    "HAI type 2",
+    "Hépatite auto-immune",
+    "Hépatite auto-immune type 2"
+  ],
+  "ORPHA:623615": [
+    "Encéphalite limbique auto-immune"
+  ],
+  "ORPHA:623638": [
+    "Ataxie cérébelleuse auto-immune",
+    "Ataxie cérébelleuse immuno-médiée",
+    "Cérébellite auto-immune"
+  ],
+  "ORPHA:624259": [
+    "AC auto-immune non-spécifique avec anticorps caractéristiques",
+    "Ataxie cérebelleuse auto-immune non-spécifique avec anticorps caractéristiques"
+  ],
+  "ORPHA:641350": [
+    "Hypophysite induite par l'immunothérapie"
+  ],
+  "ORPHA:645617": [
+    "Dermatomyosite",
+    "Dermatomyosite amyopathique",
+    "Dermatomyosite sine myositis"
+  ],
+  "ORPHA:79669": [
+    "Dermatite bulleuse auto-immune"
+  ],
+  "ORPHA:85435": [
+    "AJI polyarticulaire avec facteur rhumatoïde",
+    "Arthrite juvénile idiopathique polyarticulaire avec facteur rhumatoïde",
+    "Arthrite juvénile polyarticulaire avec facteur rhumatoïde",
+    "Polyarthrite juvénile avec facteur rhumatoïde",
+    "Polyarthrite juvénile facteur rhumatoïde positif"
+  ],
+  "ORPHA:90290": [
+    "Sclérodermie systémique",
+    "Syndrome CREST",
+    "Syndrome de calcinose-maladie de Raynaud-troubles moteurs oesophagiens-sclérodactylie-télangiectasie"
+  ],
+  "ORPHA:93552": [
+    "LES de l'enfant",
+    "Lupus érythémateux disséminé de l'enfant"
+  ],
+  "ORPHA:93585": [
+    "PTT acquis",
+    "Purpura thrombotique thrombocytopénique",
+    "Purpura thrombotique thrombocytopénique acquis",
+    "Purpura thrombotique thrombocytopénique associé aux anticorps anti-ADAMTS-13",
+    "Purpura thrombotique thrombocytopénique d'origine auto-immune",
+    "Purpura thrombotique thrombocytopénique d'origine immunitaire",
+    "TTP acquis"
+  ],
+  "ORPHA:97563": [
+    "Glomérulonéphrite pauci-immune",
+    "Glomérulonéphrite pauci-immune avec ANCA",
+    "Glomérulonéphrite pauci-immune avec auto-anticorps anticytoplasme des polynucléaires neutrophiles"
+  ],
+  "ORPHA:99922": [
+    "Pemphigoïde oculaire cicatricielle"
+  ],
+  "ORPHA:166484": [
+    "Maladie inflammatoire ou auto-immune associée à une épilepsie"
+  ],
+  "ORPHA:169355": [
+    "Syndrome d'immunodéficience avec auto-immunité",
+    "Syndrome de déficit immunitaire avec auto-immunité"
+  ],
+  "ORPHA:182228": [
+    "Maladie systémique auto-immune"
+  ],
+  "ORPHA:1959": [
+    "Anémie hémolytique et thrombocytopénie autoimmunes",
+    "Pancytopénie auto-immune",
+    "Syndrome d'Evans"
+  ],
+  "ORPHA:228312": [
+    "Anémie hémolytique auto-immune à auto-anticorps froids",
+    "AIHA froid",
+    "cAHA",
+    "cAIHA"
+  ],
+  "ORPHA:268114": [
+    "Maladie leucoproliférative auto-immune associée à RAS",
+    "RALD"
+  ],
+  "ORPHA:275517": [
+    "Syndrome lymphoprolifératif auto-immun-infections virales récurrentes par déficit en CASP8",
+    "Syndrome lymphoprolifératif auto-immun-infections virales récurrentes par déficit en caspase 8",
+    "Syndrome lymphoprolifératif avec auto-immunité-infections virales récurrentes par déficit en CASP8",
+    "Syndrome de déficit en caspase 8",
+    "SLAI-infections virales récurrentes par déficit en CASP8",
+    "ALPS-infections virales récurrentes par déficit en CASP8",
+    "CEDS"
+  ],
+  "ORPHA:275523": [
+    "Maladie lymphoproliférative auto-immune de Dianzani",
+    "DALD"
+  ],
+  "ORPHA:280302": [
+    "Pancréatite auto-immune type 1",
+    "AIP type 1",
+    "Pancréatite associée à IgG4",
+    "Pancréatite sclérosante lymphoplasmocytaire"
+  ],
+  "ORPHA:280315": [
+    "Pancréatite auto-immune type 2",
+    "Pancréatite centro-canalaire",
+    "AIP type 2"
+  ],
+  "ORPHA:282196": [
+    "Polyendocrinopathie auto-immune",
+    "APS"
+  ],
+  "ORPHA:306727": [
+    "Maladie auto-immune post-infectieuse avec mouvements choréiques"
+  ],
+  "ORPHA:315350": [
+    "Maladie auto-immune avec atteinte cutanée"
+  ],
+  "ORPHA:324933": [
+    "Syndrome mixte auto-inflammatoire et auto-immun"
+  ],
+  "ORPHA:391490": [
+    "Myasthénie auto-immune de l'adulte",
+    "Myasthenia gravis de l'adulte",
+    "Myasthénie acquise de l'adulte"
+  ],
+  "ORPHA:391497": [
+    "Myasthénie auto-immune juvénile",
+    "Myasthénie acquise juvénile",
+    "Myasthenia gravis juvénile"
+  ],
+  "ORPHA:391504": [
+    "Myasthénie auto-immune du nouveau-né",
+    "Myasthénie auto-immune transitoire du nouveau-né",
+    "Myasthénie acquise transitoire du nouveau-né",
+    "Myasthenia gravis transitoire du nouveau-né",
+    "NMG"
+  ],
+  "ORPHA:398091": [
+    "Maladie auto-immune néonatale par passage transplacentaire d'anticorps",
+    "Maladie auto-immune néonatale secondaire"
+  ],
+  "ORPHA:398109": [
+    "Anémie hémolytique auto-immune néonatale",
+    "AHAI néonatale",
+    "AHA néonatale",
+    "AIHA néonatale"
+  ],
+  "ORPHA:436159": [
+    "Syndrome lymphoprolifératif auto-immun dû à une haploinsuffisance de CTLA-4",
+    "ALPS dû à une haploinsuffisance de CTLA-4",
+    "CHAI",
+    "SLAI dû à une haploinsuffisance de CTLA-4"
+  ],
+  "ORPHA:438159": [
+    "Maladie auto-immune multisystémique précoce associée à STAT3"
+  ],
+  "ORPHA:444092": [
+    "Syndrome autoimmun de pneumopathie interstitielle-arthrite",
+    "Syndrome du COPA"
+  ],
+  "ORPHA:444463": [
+    "Syndrome d'anémie hémolytique autoimmune-thrombocytopénie autoimmune-déficit immunitaire primaire par déficit en TPP2",
+    "Syndrome d'anémie hémolytique autoimmune-thrombocytopénie autoimmune-déficit immunitaire primaire par déficit en tripeptidyl-peptidase II",
+    "Syndrome d'anémie hémolytique autoimmune-thrombocytopénie autoimmune-immunodéficience primaire par décit en TPP2",
+    "Syndrome d'Evans associé à une immunodéficience primaire",
+    "Maladie TRIANGLE"
+  ],
+  "ORPHA:499047": [
+    "Neuropathie optique autoimmune ou inflammatoire"
+  ],
+  "ORPHA:519264": [
+    "Maladie inflammatoire ou auto-immune avec atteinte du système lacrymal"
+  ],
+  "ORPHA:519290": [
+    "Maladie cornéenne auto-inflammatoire ou auto-immune"
+  ],
+  "ORPHA:522043": [
+    "Entéropathie autoimmune syndromique"
+  ],
+  "ORPHA:522566": [
+    "Maladie génétique cornéenne auto-inflammatoire ou auto-immune"
+  ],
+  "ORPHA:563589": [
+    "Hépatite auto-immune séronégative",
+    "HAI séronégative"
+  ],
+  "ORPHA:619948": [
+    "Syndrome d'auto-immunité-auto-inflammation-immunodéficience à début précoce par haploinsuffisance en SOCS1",
+    "Syndrome d'auto-immunité-auto-inflammation-immunodéficience à début précoce par haploinsuffisance en protéine suppressor of cytokine signaling 1",
+    "Syndrome auto-inflammatoire associé à SOCS1"
+  ],
+  "ORPHA:624166": [
+    "Encéphalite auto-immune supratentoriale non-spécifique avec anticorps caractéristiques",
+    "EA supratentoriale non-spécifique avec anticorps caractéristiques"
+  ],
+  "ORPHA:624178": [
+    "Encéphalite auto-immune supratentoriale non-spécifique sans anticorps caractéristiques",
+    "EA supratentoriale non-spécifique sans anticorps caractéristiques"
+  ],
+  "ORPHA:624199": [
+    "Encéphalite du tronc cérébral auto-immune non-spécifique avec anticorps caractéristiques",
+    "Rhombencéphalite auto-immune non-spécifique avec anticorps caractéristiques",
+    "Rhombo-encéphalite auto-immune non-spécifique avec anticorps caractéristiques",
+    "Rhomboencéphalite auto-immune non-spécifique avec anticorps caractéristiques"
+  ],
+  "ORPHA:624216": [
+    "Encéphalite du tronc cérébral auto-immune non-spécifique sans anticorps caractéristiques",
+    "Rhombencéphalite auto-immune non-spécifique sans anticorps caractéristiques",
+    "Rhombo-encéphalite auto-immune non-spécifique sans anticorps caractéristiques",
+    "Rhomboencéphalite auto-immune non-spécifique sans anticorps caractéristiques"
+  ],
+  "ORPHA:624268": [
+    "Ataxie cérébelleuse auto-immune non-spécifique sans anticorps caractéristiques",
+    "Ataxie cérébelleuse auto-immune primitive",
+    "CA auto-immune non-spécifique sans anticorps caractéristiques"
+  ],
+  "ORPHA:648681": [
+    "Sclérite auto-immune"
+  ],
+  "ORPHA:658946": [
+    "Dérèglement immunitaire à début précoce avec autoimmunité par déficit partiel en DOCK11",
+    "Dérèglement immunitaire à début précoce avec autoimmunité par déficit précoce en dedicator of cytokinesis 11"
+  ],
+  "ORPHA:698945": [
+    "TIH auto-immune",
+    "Thrombopénie induite par l'héparine auto-immune",
+    "aHIT"
+  ],
+  "ORPHA:71203": [
+    "Thrombocytopénie auto-immune"
+  ],
+  "ORPHA:83601": [
+    "Encéphalopathie sensible aux stéroïdes associée à une thyroïdite auto-immune",
+    "Encéphalite de Hashimoto",
+    "SREAT"
+  ],
+  "ORPHA:90036": [
+    "Anémie hémolytique auto-immune mixte",
+    "AIHA mixte"
+  ],
+  "ORPHA:90037": [
+    "Anémie hémolytique auto-immune induite par les médicaments",
+    "AIHA induite par les médicaments"
+  ],
+  "ORPHA:94075": [
+    "Diarrhée sévère auto-immune de l'enfant",
+    "Entéropathie auto-immune",
+    "Entéropathie sévère d'origine immunitaire"
+  ],
+  "ORPHA:98421": [
+    "Aplasie primaire autoimmune de la lignée rouge",
+    "Aplasie primaire acquise de la lignée rouge"
+  ],
+  "ORPHA:98750": [
+    "Canalopathie neurologique auto-immune"
+  ],
+  "ORPHA:56425": [
+    "Maladie des agglutinines froides",
+    "CAS",
+    "CAD",
+    "Syndrome des agglutinines froides"
+  ],
+  "ORPHA:1459": [
+    "Syndrome de maladie coeliaque-calcifications cérébrales-épilepsie",
+    "CEC"
+  ],
+  "ORPHA:398124": [
+    "Lupus érythémateux néonatal"
+  ],
+  "ORPHA:231154": [
+    "CID avec expansion des cellules T gamma-delta",
+    "DIC avec expansion des cellules T gamma-delta",
+    "CID par déficit partiel en RAG1",
+    "Déficit immunitaire combiné avec expansion des cellules T gamma-delta",
+    "Déficit immunitaire combiné par déficit partiel en RAG1"
+  ],
+  "ORPHA:555905": [
+    "Pemphigus à IgA"
+  ],
+  "ORPHA:317430": [
+    "Immunodéficience combinée par déficit en STIM1",
+    "Déficit immunitaire combiné par déficit en STIM1",
+    "CID par déficit en STIM1",
+    "DIC par déficit en STIM1"
+  ],
+  "ORPHA:447764": [
+    "Cholangite sclérosante à IgG4"
+  ],
+  "ORPHA:3130": [
+    "Syndrome de Satoyoshi"
+  ],
+  "ORPHA:596448": [
+    "MAG4",
+    "Maladie systémique liée à la présence d'anticorps IgG4"
+  ],
+  "ORPHA:79479": [
+    "Pemphigus végétant"
+  ],
+  "ORPHA:535": [
+    "Lupus érythémateux cutané rare"
+  ],
+  "ORPHA:1467": [
+    "Syndrome de Cogan"
+  ],
+  "ORPHA:329173": [
+    "Syndrome auto-inflammatoire avec infection bactérienne pyogénique et amylopectinose"
+  ],
+  "ORPHA:398117": [
+    "Dermatomyosite néonatale",
+    "DM néonatale"
+  ],
+  "ORPHA:445018": [
+    "DIC par déficit en LRBA",
+    "CID par déficit en LRBA",
+    "Déficit immunitaire combiné par déficit en LRBA"
+  ],
+  "ORPHA:398097": [
+    "Syndrome des antiphospholipides néonatal",
+    "Syndrome de Hughes néonatal",
+    "SAPL néonatal",
+    "Syndrome des anticorps antiphospholipides néonatal",
+    "APS néonatal",
+    "Neonatal APS"
+  ],
+  "ORPHA:324636": [
+    "Syndrome de Gardner-Diamond",
+    "Syndrome des ecchymoses douloureuses",
+    "Purpura psychogène",
+    "Syndrome de sensibilisation aux érythrocytes"
+  ],
+  "ORPHA:624190": [
+    "Rhombo-encéphalite paranéoplasique isolée",
+    "Encéphalite paranéoplasique isolée du tronc cérébral",
+    "Rhombencéphalite paranéoplasique isolée",
+    "Rhomboencéphalite paranéoplasique isolée"
+  ],
+  "ORPHA:779": [
+    "Syndrome de Reynolds",
+    "Cirrhose biliaire primitive et sclérodermie systémique"
+  ],
+  "ORPHA:63999": [
+    "Médiastinite sclérosante",
+    "Médiastinite associée à IgG4",
+    "Fibrose médiastinale",
+    "Médiastinite fibreuse"
+  ],
+  "ORPHA:300345": [
+    "Lupus érythémateux systémique familial",
+    "LES familial",
+    "LES autosomique",
+    "SLE familial",
+    "Lupus systémique familial",
+    "Lupus systémique autosomique",
+    "SLE autosomique",
+    "Lupus érythémateux systémique autosomique"
+  ],
+  "ORPHA:636955": [
+    "Pemphigus foliacé endémique",
+    "Fogo selvagem"
+  ],
+  "ORPHA:93672": [
+    "DM juvénile",
+    "Dermatomyosite juvénile"
+  ],
+  "ORPHA:324530": [
+    "APLAID",
+    "Syndrome auto-inflammatoire-dérèglement avec déficit immunitaire lié à PLCG2"
+  ],
+  "ORPHA:398127": [
+    "Sclérodermie néonatale"
+  ],
+  "ORPHA:63275": [
+    "Pemphigoïde gestationnelle",
+    "Pemphigoïde gravidique",
+    "Pemphigoïde de la grossesse"
+  ],
+  "ORPHA:838": [
+    "Maladie de Susac",
+    "Microangiopathie cochléo-encéphalo-rétinienne",
+    "Vasculopathie rétino-cochléo-cérébrale",
+    "Syndrome de Susac"
+  ],
+  "ORPHA:279928": [
+    "Uvéite paranéoplasique"
+  ]
+}

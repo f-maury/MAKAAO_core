@@ -36,7 +36,9 @@ def synthetic_graphs(mod):
     disease_instance = mod.MAKAAO["orpha_123_instance"]
     target_class = mod.MAKAAO["UP_P12345"]
     target_instance = mod.MAKAAO["UP_P12345_instance"]
-    positivity_class = mod.MAKAAO["positivity_1"]
+    # Positivity individuals are typed with their HPO positivity class (or a
+    # created makaao:positivity_<id> class) plus biolink:PhenotypicFeature.
+    positivity_class = mod.OBO["HP_0003493"]
     positivity_instance = mod.MAKAAO["positivity_1_instance"]
     hpo_class = mod.OBO["HP_0030057"]
     loinc_part_class = mod.MAKAAO_LOINC["LP12345-6"]
@@ -48,7 +50,7 @@ def synthetic_graphs(mod):
         (aab_instance, aab_class, None),
         (disease_instance, disease_class, mod.MAKAAO.AutoimmuneDisease),
         (target_instance, target_class, mod.MAKAAO.Target),
-        (positivity_instance, positivity_class, None),
+        (positivity_instance, positivity_class, mod.BIOLINK.PhenotypicFeature),
         (loinc_part_instance, loinc_part_class, SKOS.Concept),
         (loinc_term_instance, loinc_term_class, SKOS.Concept),
     ]
@@ -61,17 +63,9 @@ def synthetic_graphs(mod):
         schema.add((domain_class, RDFS.label, Literal(str(domain_class).rsplit("/", 1)[-1])))
 
     schema.add((aab_class, RDFS.subClassOf, mod.MAKAAO.Autoantibody))
-    schema.add((positivity_class, RDFS.subClassOf, mod.MAKAAO.AutoantibodyPositivity))
-    schema.add(
-        (
-            mod.MAKAAO.AutoantibodyPositivity,
-            RDFS.subClassOf,
-            mod.BIOLINK.PhenotypicFeature,
-        )
-    )
+    schema.add((positivity_class, RDFS.subClassOf, hpo_class))
     for class_iri in (
         mod.MAKAAO.Autoantibody,
-        mod.MAKAAO.AutoantibodyPositivity,
         mod.BIOLINK.PhenotypicFeature,
         hpo_class,
     ):
@@ -88,8 +82,6 @@ def synthetic_graphs(mod):
     data.add((loinc_term_instance, mod.LOINC_COMPONENT, loinc_part_instance))
     data.add((aab_instance, SKOS.closeMatch, loinc_part_instance))
     data.add((loinc_part_instance, SKOS.closeMatch, aab_instance))
-    data.add((positivity_class, SKOS.closeMatch, hpo_class))
-    data.add((hpo_class, SKOS.closeMatch, positivity_class))
 
     # Reification and provenance must not leak into the lite graph.
     relation = mod.MAKAAO["r1"]
@@ -137,7 +129,7 @@ def test_build_lite_graph_projects_current_relationships(mod):
     aab_class = mod.MAKAAO["aab_1"]
     disease_class = mod.ORDO["Orphanet_123"]
     target_class = mod.MAKAAO["UP_P12345"]
-    positivity_class = mod.MAKAAO["positivity_1"]
+    positivity_class = mod.OBO["HP_0003493"]
     hpo_class = mod.OBO["HP_0030057"]
     loinc_part_class = mod.MAKAAO_LOINC["LP12345-6"]
     loinc_term_class = mod.MAKAAO_LOINC["1234-5"]
@@ -151,8 +143,10 @@ def test_build_lite_graph_projects_current_relationships(mod):
     assert (target_class, mod.BAO["BAO_0000598"], aab_class) in lite
     assert (loinc_term_class, mod.LOINC_COMPONENT, loinc_part_class) in lite
     assert (aab_class, SKOS.closeMatch, loinc_part_class) in lite
-    assert (positivity_class, SKOS.closeMatch, hpo_class) in lite
-    assert (hpo_class, SKOS.closeMatch, positivity_class) in lite
+    # The HPO positivity class keeps its hierarchy below HP:0030057; the
+    # generic biolink:PhenotypicFeature type is not used as a projection class.
+    assert (positivity_class, RDFS.subClassOf, hpo_class) in lite
+    assert not list(lite.triples((None, None, mod.BIOLINK.PhenotypicFeature)))
     assert report["relationship_output_counts"] == {
         str(mod.LOINC_COMPONENT): 1,
         str(mod.SIO["SIO_001279"]): 1,
@@ -160,7 +154,7 @@ def test_build_lite_graph_projects_current_relationships(mod):
         str(mod.SIO["SIO_001403"]): 2,
         str(mod.BAO["BAO_0000211"]): 1,
         str(mod.BAO["BAO_0000598"]): 1,
-        str(SKOS.closeMatch): 4,
+        str(SKOS.closeMatch): 2,
         str(mod.BIOLINK.biomarker_for): 1,
         str(mod.BIOLINK.has_biomarker): 1,
     }
@@ -266,10 +260,19 @@ def test_projection_fallbacks_and_ambiguity(mod):
     assert mod.fallback_class_from_instance(mod.MAKAAO["x_instance"]) == mod.MAKAAO["x"]
     assert mod.fallback_class_from_instance(mod.MAKAAO["x"]) is None
 
+    assert mod.fallback_class_from_instance(mod.MAKAAO["positivity_18_instance"]) == mod.OBO["HP_0030057"]
+
+    # A positivity individual projects to its single positivity class: the
+    # mapped HPO class or the created class. biolink:PhenotypicFeature is a
+    # generic type and is ignored; two positivity classes are an error.
     node = mod.MAKAAO["positivity_1_instance"]
-    local = mod.MAKAAO["positivity_1"]
+    created = mod.MAKAAO["positivity_1"]
     hpo = mod.OBO["HP_0000001"]
-    assert mod.choose_projection_class(node, {node: {local, hpo}}) == local
+    feature = mod.BIOLINK.PhenotypicFeature
+    assert mod.choose_projection_class(node, {node: {hpo, feature}}) == hpo
+    assert mod.choose_projection_class(node, {node: {created, feature}}) == created
+    with pytest.raises(RuntimeError, match="exactly one positivity class"):
+        mod.choose_projection_class(node, {node: {created, hpo}})
 
     ambiguous = mod.MAKAAO["unknown_instance"]
     with pytest.raises(RuntimeError, match="Ambiguous"):

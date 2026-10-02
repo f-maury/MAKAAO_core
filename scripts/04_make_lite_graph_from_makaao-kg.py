@@ -56,6 +56,7 @@ GENERIC_INSTANCE_TYPES = {
     RDF.Statement,
     OWL.NamedIndividual,
     SKOS.Concept,
+    BIOLINK.PhenotypicFeature,  # generic type added to positivity individuals
     MAKAAO.Document,
     MAKAAO.Relation,
     MAKAAO.Target,
@@ -262,7 +263,7 @@ def fallback_class_from_instance(node: URIRef) -> URIRef | None:
     if stem == "aab_18":
         return MAKAAO.Autoantibody
     if stem == "positivity_18":
-        return MAKAAO.AutoantibodyPositivity
+        return OBO["HP_0030057"]  # Autoimmune antibody positivity
     if stem.startswith("orpha_") and stem[len("orpha_") :].isdigit():
         return ORDO[f"Orphanet_{stem[len('orpha_'):]}"]
     if stem.startswith("hpo_HP_"):
@@ -306,14 +307,15 @@ def choose_projection_class(
         }
     }
 
-    # Positivity individuals project only to their local positivity class.
-    # HPO classes are mapping targets and must never replace that local class.
+    # Positivity individuals project to their single positivity class: the
+    # mapped HPO class, or the makaao:positivity_<id> class created below
+    # HP:0030057 when HPO has none.
     if tail(node).startswith("positivity_"):
-        local_candidates = sorted(
+        positivity_candidates = sorted(
             (
                 candidate
                 for candidate in candidates
-                if candidate == MAKAAO.AutoantibodyPositivity
+                if is_hpo_class(candidate)
                 or (
                     str(candidate).startswith(str(MAKAAO))
                     and tail(candidate).startswith("positivity_")
@@ -321,22 +323,12 @@ def choose_projection_class(
             ),
             key=str,
         )
-        if len(local_candidates) == 1:
-            return local_candidates[0]
-        if len(local_candidates) > 1:
-            fallback = fallback_class_from_instance(node)
-            if fallback in local_candidates:
-                return fallback
-            raise RuntimeError(
-                "Ambiguous local positivity classes for "
-                f"{node}: {', '.join(map(str, local_candidates))}"
-            )
-        hpo_candidates = sorted((c for c in candidates if is_hpo_class(c)), key=str)
-        if hpo_candidates:
-            raise RuntimeError(
-                f"Positivity individual {node} is typed only with external HPO "
-                "class(es); a local positivity class is required"
-            )
+        if len(positivity_candidates) == 1:
+            return positivity_candidates[0]
+        raise RuntimeError(
+            f"Positivity individual {node} must have exactly one positivity "
+            f"class; found: {', '.join(map(str, positivity_candidates)) or 'none'}"
+        )
 
     if len(candidates) == 1:
         return next(iter(candidates))

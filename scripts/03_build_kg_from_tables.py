@@ -22,12 +22,12 @@ from rdflib.namespace import XSD
 from datetime import date
 
 # ===================== SCRIPT VERSION =====================
-SCRIPT_VERSION = "1.2.34"
-SCRIPT_ITERATION = "2026-08-15-readable-relation-source-occurrences"
+SCRIPT_VERSION = "1.2.36"
+SCRIPT_ITERATION = "2026-10-02-hpo-positivity-hierarchy-no-anonymous-axioms"
 
 # The dataset version is independent of the Python script version.
-#KG_VERSION = "1.0.5"  # full makaao_core.csv dataset
-KG_VERSION = "sample"  # public/testing makaao_sample.csv
+KG_VERSION = "1.0.7"  # full makaao_core.csv dataset
+#KG_VERSION = "sample"  # public/testing makaao_sample.csv
 version = KG_VERSION  # retained for compatibility with the existing code
 
 # ===================== HARDCODED CONFIG =====================
@@ -60,8 +60,8 @@ KG_DIR = (PROJECT_DIR / "kg").resolve()
 
 BASE_DIR = str(DATA_DIR / "processed_tables")
 OUTPUT_DIR = str(DATA_DIR)
-#makaao_core_name = str(DATA_DIR / "makaao_core.csv")
-makaao_core_name = str(DATA_DIR / "makaao_sample.csv")
+makaao_core_name = str(DATA_DIR / "makaao_core.csv")
+#makaao_core_name = str(DATA_DIR / "makaao_sample.csv")
 OUTPUT_OWL_ENRICHED = str(KG_DIR / f"makaao_kg_{version}.rdf")
 OUTPUT_OWL_TBOX = str(KG_DIR / f"makaao_kg_{version}_ontology.owl")
 
@@ -1779,33 +1779,7 @@ def init_graph():  # start an empty knowledge graph and add a few basic things t
             BIOLINK.ChemicalEntityOrGeneOrGeneProduct,
         )
     )
-    g.add((MAKAAO.AutoantibodyPositivity, RDF.type, OWL.Class))
-    add_pref(
-        g,
-        MAKAAO.AutoantibodyPositivity,
-        "Autoimmune antibody positivity",
-    )
-    g.add(
-        (
-            MAKAAO.AutoantibodyPositivity,
-            RDFS.subClassOf,
-            BIOLINK.PhenotypicFeature,
-        )
-    )
-    g.add(
-        (
-            MAKAAO.AutoantibodyPositivity,
-            SKOS.closeMatch,
-            HPO_AUTOIMMUNE_ANTIBODY_POSITIVITY,
-        )
-    )
-    g.add(
-        (
-            HPO_AUTOIMMUNE_ANTIBODY_POSITIVITY,
-            SKOS.closeMatch,
-            MAKAAO.AutoantibodyPositivity,
-        )
-    )
+    g.add((HPO_AUTOIMMUNE_ANTIBODY_POSITIVITY, RDF.type, OWL.Class))
     g.add((MAKAAO.AutoimmunityRelatedDisease, RDF.type, OWL.Class))
     g.add((MAKAAO.AutoimmunityRelatedDisease, RDFS.label, Literal("Autoimmunity-related disease")))
     g.add((MAKAAO.AutoimmuneDisease, RDF.type, OWL.Class))
@@ -2007,9 +1981,15 @@ def build_core(
     g.add((GLOBAL_ACTIVITY, PROV.used, csv_doc))
 
     hpo_local_names = hpo_cn_names or {}
+    add_pref(
+        g,
+        HPO_AUTOIMMUNE_ANTIBODY_POSITIVITY,
+        (hpo_local_names.get("HP:0030057") or "").strip()
+        or "Autoimmune antibody positivity",
+    )
     umls_synonyms = umls_synonyms or {}
     primary_labels, aab_class_uri = {}, {}
-    pos_uris_by_idx = {}
+    pos_expression_by_idx = {}
     positivity_instances_by_hpo = defaultdict(set)
 
     # Build classes/instances
@@ -2054,76 +2034,90 @@ def build_core(
         )  # we create an instance of the current AAb class with its preferred label
         add_pref(g, inst, primary_labels[idx])
 
-        # Every autoantibody has exactly one local positivity class and one
-        # local positivity individual. HPO correspondences are non-logical
-        # closeMatch links on that class; no HPO identifier enters a local URI.
+        # Reuse mapped HPO positivity classes. Create a positivity class only
+        # when this autoantibody has no HPO mapping; its place below
+        # HP:0030057 is added after this loop.
         local_pos_label = primary_labels[idx] + " positivity"
-        pos_inst = MAKAAO[f"positivity_{idx}_instance"]
-        mapped_hpo_codes = []
+        mapped_hpo_codes = sorted(
+            {
+                code_norm
+                for hp_code in data["hpo_list"].get(idx, [])
+                if (code_norm := canonical_hpo_code(hp_code))
+            }
+        )
         if idx == "18":
-            structural_pos_cls = MAKAAO.AutoantibodyPositivity
-            root_code = "HP:0030057"
-            root_label = (
-                (hpo_local_names.get(root_code) or "").strip()
-                or "Autoimmune antibody positivity"
-            )
-            add_pref(g, structural_pos_cls, root_label)
-            add_pref(g, HPO_AUTOIMMUNE_ANTIBODY_POSITIVITY, root_label)
-            positivity_instance_label = root_label
-            mapped_hpo_codes.append(root_code)
-        else:
-            structural_pos_cls = MAKAAO[f"positivity_{idx}"]
-            g.add((structural_pos_cls, RDF.type, OWL.Class))
-            add_pref(g, structural_pos_cls, local_pos_label)
-            positivity_instance_label = local_pos_label
+            mapped_hpo_codes = ["HP:0030057"]
+        positivity_classes = [hp_to_obo_uri(code) for code in mapped_hpo_codes]
+        if not positivity_classes:
+            positivity_classes = [MAKAAO[f"positivity_{idx}"]]
+        # No class-level OWL restriction or union is generated: the KG contains
+        # no anonymous class expressions. The autoantibody-phenotype link is
+        # asserted between individuals below.
+        pos_expression_by_idx[idx] = positivity_classes
 
-            # Link the one AAb-specific positivity class directly to every
-            # corresponding HPO class. Materialize both directions because
-            # skos:closeMatch is symmetric and the canonical KG is checked
-            # without relying on OWL inference. HPO labels remain on HPO resources.
-            seen_hpo_codes = set()
-            for hp_code in data["hpo_list"].get(idx, []):
-                code_norm = canonical_hpo_code(hp_code)
-                hpo_cls = hp_to_obo_uri(code_norm)
-                if not hpo_cls or not code_norm or code_norm in seen_hpo_codes:
-                    continue
-                seen_hpo_codes.add(code_norm)
-                hpo_label = (hpo_local_names.get(code_norm) or "").strip()
-                g.add((structural_pos_cls, SKOS.closeMatch, hpo_cls))
-                g.add((hpo_cls, SKOS.closeMatch, structural_pos_cls))
-                add_pref(g, hpo_cls, hpo_label or code_norm)
-                mapped_hpo_codes.append(code_norm)
+        # Each mapped phenotype gets its own individual, so several mappings
+        # neither conflate HPO classes nor make lite projection ambiguous.
+        for position, pos_cls in enumerate(positivity_classes):
+            code_norm = mapped_hpo_codes[position] if mapped_hpo_codes else None
+            pos_label = local_pos_label
+            if code_norm:
+                pos_label = (hpo_local_names.get(code_norm) or "").strip() or (
+                    "Autoimmune antibody positivity"
+                    if code_norm == "HP:0030057"
+                    else code_norm
+                )
+            g.add((pos_cls, RDF.type, OWL.Class))
+            add_pref(g, pos_cls, pos_label)
 
-        # The structural class alone participates in the mirrored taxonomy.
-        pos_uris_by_idx[idx] = [structural_pos_cls]
+            fragment = f"positivity_{idx}"
+            if len(positivity_classes) > 1:
+                fragment += f"_{make_valid(code_norm)}"
+            pos_inst = MAKAAO[f"{fragment}_instance"]
+            add_pref(g, pos_inst, pos_label)
+            g.add((pos_inst, RDF.type, pos_cls))
+            # Keep the selected phenotype individuals recognizable to SHACL
+            # without requiring import expansion or changing HPO's hierarchy.
+            g.add((pos_inst, RDF.type, BIOLINK.PhenotypicFeature))
+            if code_norm:
+                positivity_instances_by_hpo[code_norm].add(pos_inst)
+            # Materialize both directions of the Biolink inverse pair.
+            g.add((inst, BIOLINK.biomarker_for, pos_inst))
+            g.add((pos_inst, BIOLINK.has_biomarker, inst))
 
-        # The individual instantiates only the one AAb-specific local class.
-        add_pref(g, pos_inst, positivity_instance_label)
-        g.add((pos_inst, RDF.type, structural_pos_cls))
-        for hpo_code in mapped_hpo_codes:
-            positivity_instances_by_hpo[hpo_code].add(pos_inst)
-        # Materialize both directions of the Biolink inverse pair so the
-        # canonical KG can be validated without requiring a reasoner.
-        g.add((inst, BIOLINK.biomarker_for, pos_inst))
-        g.add((pos_inst, BIOLINK.has_biomarker, inst))
-
-    # Mirror only the autoantibody taxonomy in the one-per-AAb local positivity
-    # classes. HPO closeMatch mappings do not participate in this hierarchy.
+    # A positivity class is created only for an autoantibody without an HPO
+    # positivity class. It follows the autoantibody hierarchy (parent_id): it
+    # becomes a subclass of the positivity class of each parent autoantibody
+    # (an HPO class, or a class created here), so it descends from HP:0030057
+    # through that hierarchy. HP:0030057 is a direct superclass only when no
+    # parent provides a positivity class (e.g. the parent is the root, 18).
+    # HPO classes keep their own hierarchy, supplied by the HPO module.
     for idx in sorted(data["indices"], key=lambda value: int(value)):
-        if idx == "18":
+        if pos_expression_by_idx[idx] != [MAKAAO[f"positivity_{idx}"]]:
             continue
-
-        child_uri = pos_uris_by_idx[idx][0]
+        child_uri = pos_expression_by_idx[idx][0]
         parents = data["parents"].get(idx) or []
         valid_parents = sorted(
             {p for p in parents if p != idx and p in data["indices"]},
             key=lambda value: int(value),
         )
-        parent_list = (
-            [pos_uris_by_idx[parent_idx][0] for parent_idx in valid_parents]
-            if valid_parents
-            else [MAKAAO.AutoantibodyPositivity]
-        )
+        parent_list = []
+        for parent_idx in valid_parents:
+            parent_classes = pos_expression_by_idx[parent_idx]
+            if len(parent_classes) == 1:
+                parent_list.append(parent_classes[0])
+            else:
+                # Subclassing several alternative HPO classes would assert
+                # their intersection, so such a parent is not used.
+                print(
+                    f"WARN: positivity_{idx}: parent autoantibody {parent_idx} "
+                    f"maps to {len(parent_classes)} HPO positivity classes; "
+                    "not used as superclass"
+                )
+        # HP:0030057 (the root's positivity) is kept as a direct superclass
+        # only when no other parent provides a positivity class.
+        parent_list = [
+            uri for uri in parent_list if uri != HPO_AUTOIMMUNE_ANTIBODY_POSITIVITY
+        ] or [HPO_AUTOIMMUNE_ANTIBODY_POSITIVITY]
 
         for parent_uri in parent_list:
             if child_uri != parent_uri:
@@ -2341,9 +2335,8 @@ def process_diseases(
                                 or ""
                             ).strip()
                         )
-                        # Reuse local positivity individuals whenever this HPO
-                        # class corresponds to a generated positivity class. Only
-                        # otherwise instantiate the external HPO class directly.
+                        # Reuse positivity individuals typed with this exact HPO
+                        # class. Other Orphanet phenotypes are instantiated here.
                         phenotype_instances = positivity_instances_by_hpo.get(
                             code_norm, ()
                         )
@@ -2863,8 +2856,8 @@ def extract_tbox(source: Graph, local_ns: str) -> Graph:
       - generated LOINC Part and Term classes that are direct subclasses of
         makaao:LoincPart or makaao:LoincTerm;
       - the reused loinc_property:COMPONENT object-property schema;
-      - local positivity classes and their direct HPO close-match mappings;
-      - recursively reachable blank-node structures, such as OWL restrictions.
+      - reused HPO classes and local positivity fallbacks;
+      - recursively reachable blank-node structures, if any.
 
     Excluded:
       - all individuals and individual-level A-box assertions. Class-level
@@ -2903,10 +2896,10 @@ def extract_tbox(source: Graph, local_ns: str) -> Graph:
         ):
             seeds.add(external_cls)
 
-    # Retain used ChEBI classes explicitly exposed by build_core(). Their source
-    # hierarchy is still supplied by the imported ChEBI reasoning module.
+    # Retain used ChEBI and HPO class declarations/labels. Their source
+    # hierarchies are still supplied by the imported reasoning modules.
     for external_cls in source.subjects(RDF.type, OWL.Class):
-        if _is_chebi_class(external_cls):
+        if _is_chebi_class(external_cls) or str(external_cls).startswith(str(HP) + "HP_"):
             seeds.add(external_cls)
 
     # Retain the property used to relate LOINC Term and Part individuals.
@@ -3785,8 +3778,20 @@ def main():
             f"MAKAAO build complete: script={SCRIPT_VERSION} kg={version} "
             f"triples={len(g)} reasoning={reasoning_result['status']}"
         )
-    finally:
+    except Exception:
+        # Preserve the complete staging tree when the build fails so that
+        # ROBOT/OWLAPI profile reports, merged TBoxes, extracted modules, and
+        # the staged KG can be inspected directly. A subsequent run creates
+        # a fresh .makaao-build-* directory, so retaining a failed build does
+        # not interfere with later executions.
+        print(f"FAILED BUILD PRESERVED AT: {stage_root}")
+        raise
+    else:
+        # Successful releases are committed to KG_DIR above; the temporary
+        # staging tree is no longer needed once the commit has completed.
         if stage_root.exists():
             shutil.rmtree(stage_root, ignore_errors=True)
-if __name__ == "__main__":  
+
+
+if __name__ == "__main__":
     main()

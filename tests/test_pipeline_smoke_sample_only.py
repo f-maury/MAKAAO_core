@@ -151,13 +151,35 @@ def test_committed_sample_generates_01_03_and_04_graphs(
         generated.triples((None, build.BIOLINK.biomarker_for, None))
     )
     assert biomarker_links
+    hpo_prefix = "http://purl.obolibrary.org/obo/HP_"
+    created_prefix = str(build.MAKAAO) + "positivity_"
     for autoantibody, _, positivity in biomarker_links:
         assert (positivity, build.BIOLINK.has_biomarker, autoantibody) in generated
-        assert str(positivity).startswith(str(build.MAKAAO) + "positivity_")
-        assert not any(
-            str(rdf_type).startswith("http://purl.obolibrary.org/obo/HP_")
-            for rdf_type in generated.objects(positivity, RDF.type)
-        )
+        assert str(positivity).startswith(created_prefix)
+        # Each positivity individual has exactly one positivity class: the
+        # mapped HPO class, or a created makaao:positivity_<id> class.
+        positivity_classes = set(generated.objects(positivity, RDF.type)) - {
+            build.BIOLINK.PhenotypicFeature
+        }
+        assert len(positivity_classes) == 1, (positivity, positivity_classes)
+        (positivity_class,) = positivity_classes
+        assert str(positivity_class).startswith((hpo_prefix, created_prefix))
+
+    # Created positivity classes always have a superclass (an HPO class, another
+    # created class, or HP:0030057); HPO classes get no superclass from MAKAAO.
+    for created in generated.subjects(RDF.type, OWL.Class):
+        if str(created).startswith(created_prefix):
+            assert list(generated.objects(created, RDFS.subClassOf)), created
+    assert not [
+        cls for cls, _ in generated.subject_objects(RDFS.subClassOf)
+        if str(cls).startswith(hpo_prefix)
+    ]
+
+    # No anonymous OWL class expressions in the KG or its TBox.
+    for rdf_graph in (generated, tbox):
+        assert not list(rdf_graph.subjects(RDF.type, OWL.Restriction))
+        for predicate in (OWL.unionOf, OWL.intersectionOf, OWL.complementOf):
+            assert not list(rdf_graph.triples((None, predicate, None)))
 
     assert list(generated.triples((None, build.LOINC_COMPONENT, None)))
 

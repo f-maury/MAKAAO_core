@@ -7,6 +7,8 @@ from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, SKOS
 
 MAKAAO = Namespace("http://makaao.inria.fr/kg/")
+OBO = Namespace("http://purl.obolibrary.org/obo/")
+HPO_AUTOIMMUNE_ANTIBODY_POSITIVITY = OBO["HP_0030057"]
 SIO = Namespace("http://semanticscience.org/resource/")
 BAO = Namespace("http://www.bioassayontology.org/bao#")
 BIOLINK = Namespace("https://w3id.org/biolink/vocab/")
@@ -38,17 +40,20 @@ def build_fixture() -> Graph:
     graph.add((autoantibody_class, RDFS.subClassOf, MAKAAO.Autoantibody))
     graph.add((autoantibody_class, RDFS.label, Literal("Test autoantibody class")))
 
+    # Positivity: a created positivity class placed below HP:0030057 (an HPO
+    # positivity class is used directly when one exists). Positivity
+    # individuals are also typed biolink:PhenotypicFeature.
     graph.add((BIOLINK.PhenotypicFeature, RDF.type, OWL.Class))
-    graph.add((MAKAAO.AutoantibodyPositivity, RDF.type, OWL.Class))
+    graph.add((HPO_AUTOIMMUNE_ANTIBODY_POSITIVITY, RDF.type, OWL.Class))
     graph.add(
         (
-            MAKAAO.AutoantibodyPositivity,
-            RDFS.subClassOf,
-            BIOLINK.PhenotypicFeature,
+            HPO_AUTOIMMUNE_ANTIBODY_POSITIVITY,
+            RDFS.label,
+            Literal("Autoimmune antibody positivity"),
         )
     )
     graph.add((positivity_class, RDF.type, OWL.Class))
-    graph.add((positivity_class, RDFS.subClassOf, MAKAAO.AutoantibodyPositivity))
+    graph.add((positivity_class, RDFS.subClassOf, HPO_AUTOIMMUNE_ANTIBODY_POSITIVITY))
     graph.add((positivity_class, RDFS.label, Literal("Test positivity class")))
 
     graph.add((autoantibody, RDF.type, autoantibody_class))
@@ -64,6 +69,7 @@ def build_fixture() -> Graph:
     graph.add((autoantibody, SIO.SIO_001279, phenotype))
     graph.add((phenotype, SIO.SIO_001280, autoantibody))
     graph.add((phenotype, RDF.type, positivity_class))
+    graph.add((phenotype, RDF.type, BIOLINK.PhenotypicFeature))
     graph.add((phenotype, BIOLINK.has_biomarker, autoantibody))
     graph.add((phenotype, RDFS.label, Literal("Test phenotype")))
 
@@ -112,11 +118,11 @@ def assert_fixture_exercises_shapes(graph: Graph) -> None:
         "positivity subclass": (
             None,
             RDFS.subClassOf,
-            MAKAAO.AutoantibodyPositivity,
+            HPO_AUTOIMMUNE_ANTIBODY_POSITIVITY,
         ),
-        "phenotypic-feature hierarchy": (
-            MAKAAO.AutoantibodyPositivity,
-            RDFS.subClassOf,
+        "phenotypic-feature individual": (
+            None,
+            RDF.type,
             BIOLINK.PhenotypicFeature,
         ),
     }

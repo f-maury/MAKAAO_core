@@ -4,7 +4,7 @@ import ast
 import importlib.util
 from pathlib import Path
 
-from rdflib import Graph, Namespace, RDF
+from rdflib import BNode, Graph, Namespace, OWL, RDF, RDFS
 from rdflib.plugins.sparql.parser import parseQuery
 from pyshacl import validate
 
@@ -68,6 +68,7 @@ def test_all_embedded_shacl_sparql_queries_parse():
         MAKAAO.PositivityHasBiomarkerShape,
         MAKAAO.AutoimmunityRelatedDiseaseShape,
         MAKAAO.TargetShape,
+        MAKAAO.NoAnonymousClassExpressionShape,
     }
     assert required_shapes <= set(shapes.subjects(RDF.type, SH.NodeShape))
 
@@ -112,6 +113,32 @@ def test_missing_has_biomarker_inverse_is_rejected():
     conforms, report = validate_graph(fixture)
     assert not conforms
     assert "has_biomarker" in report
+
+
+def test_anonymous_class_expressions_are_rejected():
+    """Restrictions and unions must never appear in the MAKAAO KG."""
+    module = load_fixture_module()
+    positivity_class = module.MAKAAO["positivity_test"]
+
+    with_restriction = module.build_fixture()
+    restriction = BNode()
+    with_restriction.add((module.MAKAAO["TestAutoantibody"], RDFS.subClassOf, restriction))
+    with_restriction.add((restriction, RDF.type, OWL.Restriction))
+    with_restriction.add((restriction, OWL.onProperty, module.BIOLINK.biomarker_for))
+    with_restriction.add((restriction, OWL.someValuesFrom, positivity_class))
+    conforms, report = validate_graph(with_restriction)
+    assert not conforms
+    assert "anonymous OWL class expressions" in report
+
+    with_union = module.build_fixture()
+    union, members = BNode(), BNode()
+    with_union.add((union, RDF.type, OWL.Class))
+    with_union.add((union, OWL.unionOf, members))
+    with_union.add((members, RDF.first, positivity_class))
+    with_union.add((members, RDF.rest, RDF.nil))
+    conforms, report = validate_graph(with_union)
+    assert not conforms
+    assert "anonymous OWL class expressions" in report
 
 
 def test_current_canonical_kg_conforms_to_shacl():

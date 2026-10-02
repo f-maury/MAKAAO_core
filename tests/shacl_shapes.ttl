@@ -346,16 +346,20 @@ makaao:AutoantibodyBiomarkerShape
 
 makaao:PositivityHasBiomarkerShape
     a sh:NodeShape ;
+    # Positivity individuals are typed with their HPO positivity class (or a
+    # created makaao:positivity_<id> class) and with biolink:PhenotypicFeature.
+    # The HPO hierarchy is not in the canonical KG, so the shared
+    # biolink:PhenotypicFeature type is the target.
     sh:target [
         a sh:SPARQLTarget ;
         sh:select """
             PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
             PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-            PREFIX makaao: <http://makaao.inria.fr/kg/>
+            PREFIX biolink: <https://w3id.org/biolink/vocab/>
             SELECT ?this
             WHERE {
               ?this rdf:type ?type .
-              ?type rdfs:subClassOf* makaao:AutoantibodyPositivity .
+              ?type rdfs:subClassOf* biolink:PhenotypicFeature .
             }
         """ ;
     ] ;
@@ -368,5 +372,21 @@ makaao:PositivityHasBiomarkerShape
             sh:class makaao:Autoantibody ;
         ] ;
         sh:qualifiedMinCount 1 ;
-        sh:message "Each local positivity instance must be linked by biolink:has_biomarker to at least one autoantibody instance." ;
+        sh:message "Each positivity instance must be linked by biolink:has_biomarker to at least one autoantibody instance." ;
+    ] .
+
+######################################################################
+# Schema form
+######################################################################
+
+makaao:NoAnonymousClassExpressionShape
+    a sh:NodeShape ;
+    sh:targetSubjectsOf owl:onProperty, owl:unionOf, owl:intersectionOf, owl:complementOf ;
+    sh:sparql [
+        a sh:SPARQLConstraint ;
+        sh:message "The MAKAAO KG must not contain anonymous OWL class expressions (restrictions, unions, intersections or complements)." ;
+        sh:select """
+            SELECT $this
+            WHERE { FILTER(isIRI($this) || isBlank($this)) }
+        """ ;
     ] .
