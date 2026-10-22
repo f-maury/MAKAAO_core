@@ -26,7 +26,7 @@ SCRIPT_VERSION = "1.2.36"
 SCRIPT_ITERATION = "2026-10-02-hpo-positivity-hierarchy-no-anonymous-axioms"
 
 # The dataset version is independent of the Python script version.
-KG_VERSION = "1.0.7"  # full makaao_core.csv dataset
+KG_VERSION = "1.0.8"  # full makaao_core.csv dataset
 #KG_VERSION = "sample"  # public/testing makaao_sample.csv
 version = KG_VERSION  # retained for compatibility with the existing code
 
