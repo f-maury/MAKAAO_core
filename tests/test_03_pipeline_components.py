@@ -362,7 +362,19 @@ def test_synthetic_processed_table_components_metadata_and_tbox(
     assert (ordo, RDF.type, OWL.Class) in tbox
     assert (ordo, RDFS.subClassOf, mod.MAKAAO.AutoimmunityRelatedDisease) in tbox
     assert (restriction, RDF.type, OWL.Restriction) in tbox
-    assert not list(tbox.triples((None, mod.DCAT.downloadURL, None)))
+    # Ontology DCAT metadata describes its own file, not the source KG.
+    ontology = next(tbox.subjects(RDF.type, OWL.Ontology))
+    ontology_distributions = set(tbox.objects(ontology, mod.DCAT.distribution))
+    assert len(ontology_distributions) == 1
+    ontology_distribution = next(iter(ontology_distributions))
+    assert (ontology_distribution, RDF.type, mod.DCAT.Distribution) in tbox
+    assert set(tbox.subject_objects(mod.DCAT.downloadURL)) == {
+        (
+            ontology_distribution,
+            URIRef(f"https://makaao.inria.fr/data/{Path(mod.OUTPUT_OWL_TBOX).name}"),
+        )
+    }
+    assert not list(tbox.triples((distribution, None, None)))
     mod.validate_tbox_export(tbox)
     mod.validate_graph_iris(graph, "synthetic assembled KG")
     assert mod.validate_local_cui_labels(graph) >= 4

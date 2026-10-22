@@ -152,7 +152,9 @@ REIFIABLE_RELATION_PREDICATES = {
 }
 
 DCTERMS = Namespace("http://purl.org/dc/terms/")
+VANN = Namespace("http://purl.org/vocab/vann/")
 DCAT = Namespace("http://www.w3.org/ns/dcat#")
+VCARD = Namespace("http://www.w3.org/2006/vcard/ns#")
 ODRL = Namespace("http://www.w3.org/ns/odrl/2/")
 SCHEMA = Namespace("http://schema.org/")
 VOID = Namespace("http://rdfs.org/ns/void#")
@@ -912,7 +914,7 @@ def canon_uniprot_id(val):
         else:
             s = next((part for part in reversed(parts) if part), "")
     s = _strip_prefixes(s).strip()
-    s = s.split()[0]
+    s = s.split()[0] if s else ""
     s = s.split(";", 1)[0].strip().upper()
     if not _UNIPROT_ACCESSION_RX.fullmatch(s):
         raise ValueError(
@@ -2546,6 +2548,7 @@ def process_loinc_mappings(
             continue
 
         aab_inst = MAKAAO[f"aab_{idx}_instance"]
+        aab_cls = MAKAAO.Autoantibody if idx == "18" else MAKAAO[f"aab_{idx}"]
         part_cls = MAKAAO_LOINC[part_code]
         part_inst = MAKAAO[f"loinc_{make_valid(part_code)}_instance"]
         part_label = part_labels.get(part_code) or part_code
@@ -2563,10 +2566,10 @@ def process_loinc_mappings(
             g.add((part_inst, RDF.type, SKOS.Concept))
             add_pref(g, part_inst, part_label)
 
-        # Map the existing MAKAAO Autoantibody concept individual to the Part concept individual.
+        # Map Autoantibody and LOINC Part class IRIs, retaining the individuals.
         g.add((aab_inst, RDF.type, SKOS.Concept))
-        g.add((aab_inst, SKOS.closeMatch, part_inst))
-        g.add((part_inst, SKOS.closeMatch, aab_inst))
+        g.add((aab_cls, SKOS.closeMatch, part_cls))
+        g.add((part_cls, SKOS.closeMatch, aab_cls))
 
         # Import only terms associated with a Part used by MAKAAO.
         for test_code in part_tests.get(part_code, []):
@@ -2809,28 +2812,47 @@ _TBOX_ONTOLOGY_HEADER_PREDICATES = {
     RDF.type,
     RDFS.label,
     RDFS.comment,
+    RDFS.seeAlso,
     SKOS.prefLabel,
     OWL.versionIRI,
     OWL.versionInfo,
     OWL.imports,
+    DCTERMS.title,
+    DCTERMS.description,
+    DCTERMS.creator,
+    DCTERMS.contributor,
+    DCTERMS.created,
+    DCTERMS.modified,
+    DCTERMS.subject,
+    DCTERMS.license,
+    DCTERMS.rights,
+    DCAT.keyword,
+    DCAT.landingPage,
+    DCAT.contactPoint,
 }
 
 
 def validate_tbox_export(tbox: Graph) -> None:
-    """Ensure the standalone ontology export contains no dataset-service ABox."""
+    """Allow ontology publication metadata, but reject KG/service records."""
+    ontologies = set(tbox.subjects(RDF.type, OWL.Ontology))
+    distributions = {
+        node for ontology in ontologies
+        for node in tbox.objects(ontology, DCAT.distribution)
+    }
     forbidden_types = {
-        DCAT.Dataset,
-        DCAT.Distribution,
         DCAT.DataService,
         VOID.Dataset,
+        RDF.Statement,
+        MAKAAO.Relation,
+        MAKAAO.Document,
     }
     forbidden_predicates = {
-        DCAT.distribution,
-        DCAT.downloadURL,
         DCAT.endpointURL,
         DCAT.servesDataset,
-        DCAT.contactPoint,
         VOID.triples,
+        RDF.subject,
+        RDF.predicate,
+        RDF.object,
     }
     typed_metadata_individuals = {
         subject
@@ -2842,12 +2864,21 @@ def validate_tbox_export(tbox: Graph) -> None:
         for predicate in forbidden_predicates
         for subject, obj in tbox.subject_objects(predicate)
     ]
-    if typed_metadata_individuals or forbidden_assertions:
+    unrelated_metadata = (
+        set(tbox.subjects(RDF.type, DCAT.Dataset)) - ontologies
+    ) | (set(tbox.subjects(RDF.type, DCAT.Distribution)) - distributions)
+    for predicate in (DCAT.distribution, DCAT.contactPoint):
+        unrelated_metadata.update(set(tbox.subjects(predicate, None)) - ontologies)
+    unrelated_metadata.update(
+        set(tbox.subjects(DCAT.downloadURL, None)) - distributions
+    )
+    if typed_metadata_individuals or forbidden_assertions or unrelated_metadata:
         raise RuntimeError(
-            "Standalone MAKAAO TBox contains dataset/distribution/service ABox metadata"
+            "Standalone MAKAAO ontology contains unrelated dataset/distribution/service "
+            "or KG instance metadata"
         )
 
-def extract_tbox(source: Graph, local_ns: str) -> Graph:
+def extract_tbox(source: Graph, local_ns: str, output_name: str | None = None) -> Graph:
     """
     Extract the ontology T-box while retaining the generated LOINC integration.
 
@@ -2860,7 +2891,8 @@ def extract_tbox(source: Graph, local_ns: str) -> Graph:
       - recursively reachable blank-node structures, if any.
 
     Excluded:
-      - all individuals and individual-level A-box assertions. Class-level
+      - KG individuals and individual-level A-box assertions. Ontology DCAT
+        publication/contact records are retained. Class-level
         skos:closeMatch alignments and generated LOINC schema links are retained.
     """
     tbox = Graph()
@@ -2913,8 +2945,8 @@ def extract_tbox(source: Graph, local_ns: str) -> Graph:
     }
 
     # Copy all triples about schema seeds and recursively copy blank nodes.
-    # For the ontology header, retain only ontology metadata and imports. The
-    # DCAT/VoID publication records belong to the canonical KG, not the TBox.
+    # Retain applicable header metadata. Rebuild the distribution below for
+    # the ontology file instead of copying the canonical KG's distribution.
     stack = list(seeds)
     seen = set(seeds)
     while stack:
@@ -2929,6 +2961,98 @@ def extract_tbox(source: Graph, local_ns: str) -> Graph:
             if isinstance(o, BNode) and o not in seen:
                 seen.add(o)
                 stack.append(o)
+
+    # Describe the ontology separately from the source KG's dataset metadata.
+    tbox.bind("mak", MAKAAO)
+    tbox.bind("vann", VANN)
+    tbox.bind("dcat", DCAT)
+    tbox.bind("vcard", VCARD)
+    for ontology in ontology_headers:
+        for predicate, value in {
+            RDFS.label: Literal("MAKAAO Onto", lang="en"),
+            SKOS.prefLabel: Literal("MAKAAO Onto", lang="en"),
+            DCTERMS.title: Literal("MAKAAO Onto", lang="en"),
+            DCTERMS.description: Literal(
+                "An ontology of autoantibodies, their targets, antibody positivity, "
+                "and autoimmunity-related diseases.", lang="en"
+            ),
+            DCTERMS.license: URIRef("https://creativecommons.org/licenses/by-nc/4.0/"),
+            DCTERMS.rights: Literal(
+                "CC BY-NC 4.0 applies to original MAKAAO Onto content only. "
+                "Reused third-party content and imported ontologies remain subject "
+                "to their original licenses and notices.", lang="en"
+            ),
+            VANN.preferredNamespacePrefix: Literal("mak"),
+            VANN.preferredNamespaceUri: Literal(str(MAKAAO)),
+        }.items():
+            tbox.set((ontology, predicate, value))
+
+        # The ontology itself is the catalogued resource. These records describe
+        # its OWL serialization, not the provenance-bearing KG or its service.
+        tbox.add((ontology, RDF.type, DCAT.Dataset))
+        ontology_version = str(next(tbox.objects(ontology, OWL.versionInfo), version))
+        tbox.set((ontology, DCTERMS.identifier, Literal(f"MAKAAO-Onto-{ontology_version}")))
+        tbox.set((ontology, DCAT.version, Literal(ontology_version)))
+        tbox.add((ontology, DCAT.keyword, Literal("Ontology", lang="en")))
+        tbox.remove((ontology, DCTERMS.subject, Literal("Knowledge Graph", lang="en")))
+
+        # Follow only the contact's vCard details; never traverse into KG data.
+        for contact in tbox.objects(ontology, DCAT.contactPoint):
+            for predicate, value in source.predicate_objects(contact):
+                if predicate == RDFS.label or str(predicate).startswith(str(VCARD)):
+                    tbox.add((contact, predicate, value))
+                elif predicate == RDF.type and value == VCARD.Organization:
+                    tbox.add((contact, predicate, value))
+
+        filename = Path(OUTPUT_OWL_TBOX if output_name is None else output_name).name
+        if not filename:
+            raise ValueError("Ontology output filename is empty")
+        token = safe_local_fragment(
+            Path(filename).stem, prefix="distribution", max_slug_length=80
+        )
+        distribution = URIRef(f"{ontology}distribution/{token}")
+        tbox.add((ontology, DCAT.distribution, distribution))
+        tbox.add((distribution, RDF.type, DCAT.Distribution))
+        tbox.add((distribution, DCTERMS.title, Literal("MAKAAO Onto (RDF/XML)", lang="en")))
+        tbox.add((distribution, DCAT.downloadURL, URIRef(
+            f"https://makaao.inria.fr/data/{quote(filename, safe='._-')}"
+        )))
+        tbox.add((distribution, DCAT.mediaType, URIRef(
+            "https://www.iana.org/assignments/media-types/application/rdf+xml"
+        )))
+        for predicate in (DCTERMS.license, DCTERMS.rights):
+            for value in tbox.objects(ontology, predicate):
+                tbox.add((distribution, predicate, value))
+
+        # Preserve readable credits as annotations, without copying person or
+        # organization individuals into the TBox.
+        for predicate in (DCTERMS.creator, DCTERMS.contributor):
+            for credited in tbox.objects(ontology, predicate):
+                for label in source.objects(credited, RDFS.label):
+                    tbox.add((credited, RDFS.label, label))
+
+        for name, profile_url in (
+            ("Adrien Coulet", "https://heka.gitlabpages.inria.fr/team/members/coulet.html"),
+            ("Maud de Dieuleveult", "https://www.institutimagine.org/fr/users/maudde-dieuleveultinstitutimagineorg"),
+        ):
+            author = URIRef(profile_url)
+            tbox.add((ontology, DCTERMS.creator, author))
+            tbox.add((author, RDFS.label, Literal(name)))
+
+
+    # Declare metadata predicates as annotations so they do not create domain
+    # relations; declare the three metadata classes without importing all DCAT.
+    for predicate in set(tbox.predicates()):
+        if str(predicate).startswith((str(DCTERMS), str(VANN), str(DCAT), str(VCARD))):
+            tbox.add((predicate, RDF.type, OWL.AnnotationProperty))
+    for metadata_class, label in (
+        (DCAT.Dataset, "Dataset"),
+        (DCAT.Distribution, "Distribution"),
+        (VCARD.Organization, "Organization contact"),
+    ):
+        if (None, RDF.type, metadata_class) in tbox:
+            tbox.add((metadata_class, RDF.type, OWL.Class))
+            tbox.add((metadata_class, RDFS.label, Literal(label, lang="en")))
 
     validate_tbox_export(tbox)
     return tbox
@@ -3152,6 +3276,7 @@ def _robot_command():
 
     candidates = [
         Path(ROBOT_JAR),
+        PROJECT_DIR / "tools" / "robot.jar",
         PROJECT_DIR / "kg" / "robot.jar",
         KG_DIR / "robot.jar",
         PROJECT_DIR / "robot.jar",
@@ -3701,8 +3826,8 @@ def main():
         print(f"Local UMLS resources with labels: {labelled_cui_resources}")
         validate_graph_iris(g, "assembled MAKAAO KG")
     
-        # Export ontology (T-box) separately (no instances)
-        tbox = extract_tbox(g, str(MAKAAO))
+        # Export ontology schema with its DCAT records, excluding KG instances.
+        tbox = extract_tbox(g, str(MAKAAO), Path(OUTPUT_OWL_TBOX).name)
         validate_graph_iris(tbox, "MAKAAO TBox")
         _serialize_rdfxml_verified(tbox, stage_tbox, "standalone MAKAAO TBox")
         print(f"Staged {stage_tbox}  triples={len(tbox)}")
