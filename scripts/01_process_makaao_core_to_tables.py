@@ -1,6 +1,8 @@
 # =========================== IMPORTS ===========================
 from __future__ import annotations
 import re
+import ipaddress
+from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
 import pandas as pd
@@ -13,7 +15,42 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # =========================== DEFINE REGEX ===========================
 pmid_rx = re.compile(r"^\s*PMID\s*:\s*(\d+)\s*$", re.IGNORECASE)  # detect PMID
-http_rx = re.compile(r"^https?://", re.IGNORECASE)  # detect URL
+def valid_http_url(value: str) -> bool:
+    """Check HTTP(S) URL syntax and hostname; do not make network requests."""
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme.lower() not in {"http", "https"}:
+            return False
+        if not parsed.netloc or parsed.username or parsed.password:
+            return False
+        if any(c.isspace() or ord(c) < 32 for c in value):
+            return False
+        host = parsed.hostname
+        if not host or host.endswith(".") or ".." in host:
+            return False
+        # A public-looking DNS hostname or an IP address.
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            labels = host.split(".")
+            if len(labels) < 2 or any(
+                not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+                for label in labels
+            ):
+                return False
+        # Reject an explicit empty port, malformed ports, and invalid percent escapes.
+        if parsed.netloc.endswith(":"):
+            return False
+        try:
+            _ = parsed.port
+        except ValueError:
+            return False
+        if re.search(r"%(?![0-9A-Fa-f]{2})", value):
+            return False
+        return True
+    except ValueError:
+        return False
+
 
 
 # =========================== DEFINE FUNCTIONS ===========================
@@ -67,7 +104,7 @@ def to_pmid_urls(tokens: Sequence[str], *, preserve_other: bool = False) -> List
             continue
         m = pmid_rx.match(tok)
         source = f"https://pubmed.ncbi.nlm.nih.gov/{m.group(1)}" if m else None
-        if source is None and http_rx.match(tok):
+        if source is None and valid_http_url(tok):
             source = tok
         if source is None and preserve_other:
             source = tok
@@ -179,8 +216,8 @@ def pair_values_and_sources_by_slot(
       For these pairs:
         - If sources have fewer slots, pad source slots with '' (empty).
         - If sources have MORE slots, pad value slots with '' (ignored) so counts match.
-    - A source slot may be empty => values from that slot get source="". If a source slot
-      has multiple tokens (e.g., 'PMID:1;PMID:2'), each value in the paired value slot is
+    - Synonym source slots may be empty; required relationship sources may not.
+      If a source slot (e.g., 'PMID:1;PMID:2'), each value in the paired value slot is
       emitted with each normalized source (Cartesian product).
     - If ``preserve_other_sources`` is true, non-PMID/non-URL source tokens are
       retained verbatim instead of being discarded.
@@ -220,8 +257,28 @@ def pair_values_and_sources_by_slot(
     for v_slot, s_slot in zip(v_slots, s_slots):
         values = _items_in_slot(v_slot)
         src_tokens = _items_in_slot(s_slot)
+        # Reject orphan references in mandatory relationship columns.
+        if src_tokens and not values and (value_col_name, source_col_name) not in PAD_ALLOWED:
+            raise ValueError(
+                f"Source without corresponding identifier for aab_id={idx_for_error}: "
+                f"{value_col_name}={v_slot!r}, {source_col_name}={s_slot!r}"
+            )
+        # Require every supplied source token to be recognized for mandatory-source columns.
+        if values and (value_col_name, source_col_name) not in PAD_ALLOWED:
+            invalid = [tok for tok in src_tokens if not (pmid_rx.fullmatch(tok) or valid_http_url(tok))]
+            if invalid:
+                raise ValueError(
+                    f"Invalid source token(s) for aab_id={idx_for_error}: "
+                    f"{source_col_name}={invalid!r}"
+                )
         srcs = to_pmid_urls(src_tokens, preserve_other=preserve_other_sources)
-        if not srcs:
+        if values and not srcs:
+            if (value_col_name, source_col_name) not in PAD_ALLOWED:
+                raise ValueError(
+                    f"Missing or invalid source for aab_id={idx_for_error}: "
+                    f"{value_col_name}={values}, "
+                    f"{source_col_name}={s_slot!r}"
+                )
             pairs.extend((v, "") for v in values)
         else:
             for v in values:
@@ -232,53 +289,25 @@ def pair_values_and_sources_by_slot(
 
 # =========================== LOAD / PREP ===========================
 def load_core(inp: Path) -> pd.DataFrame:
-    """
-    Load core CSV. Drop rows with missing/invalid aab_id and warn.
-    Set 'index' == aab_id (int64).
-    """
-    import warnings
-
-    t = pd.read_csv(inp)
-
+    """Load core CSV, ignore completely empty rows, and reject invalid aab_id rows."""
+    t = pd.read_csv(inp, dtype={"aab_id": "string"})
     if "aab_id" not in t.columns:
-        raise KeyError(
-            "Missing 'aab_id' column."
-        )  # load maakao ore rows that are not empty
+        raise KeyError("Missing 'aab_id' column.")
 
+    # Empty spacer rows are harmless; rows containing data must carry a valid aab_id.
+    empty = t.apply(lambda col: col.isna() | col.astype(str).str.strip().eq(""))
+    t = t.loc[~empty.all(axis=1)].copy()
     s = t["aab_id"]
-
-    # Drop blank/missing aab_id
-    missing = s.isna() | (s.astype(str).str.strip() == "")
+    missing = s.isna() | s.astype(str).str.strip().eq("")
     if missing.any():
-        idxs = t.index[missing].tolist()[:20]
-        warnings.warn(
-            f"load_core: dropping {missing.sum()} row(s) with blank aab_id; sample indices: {idxs}"
-        )
-        t = t.loc[~missing].copy()
-        s = t["aab_id"]
+        rows = (t.index[missing] + 2).tolist()  # CSV data row (1-based, with header)
+        raise ValueError(f"Rows contain data but have no aab_id (CSV lines): {rows[:20]}")
 
-    # Coerce to numeric and drop non-numeric
-    num = pd.to_numeric(s, errors="coerce")  # if problem with an aab_id, display it
-    badnum = num.isna()
-    if badnum.any():
-        examples = t.loc[badnum, "aab_id"].astype(str).head(20).tolist()
-        warnings.warn(
-            f"load_core: dropping {badnum.sum()} row(s) with non-numeric aab_id; examples: {examples}"
-        )
-        t = t.loc[~badnum].copy()
-        num = num.loc[~badnum]
-
-    # Require integers (allow '12.0' but reject '12.3')
-    nonint = num % 1 != 0
-    if nonint.any():
-        examples = (
-            t.loc[nonint, "aab_id"].astype(str).head(20).tolist()
-        )  # if other type of problem with an aab_id, also display it
-        warnings.warn(
-            f"load_core: dropping {nonint.sum()} row(s) with non-integer aab_id; examples: {examples}"
-        )
-        t = t.loc[~nonint].copy()
-        num = num.loc[~nonint]
+    num = pd.to_numeric(s, errors="coerce")
+    bad = num.isna() | (num % 1 != 0)
+    if bad.any():
+        examples = [(int(i) + 2, str(s.loc[i])) for i in t.index[bad][:20]]
+        raise ValueError(f"Invalid (non-integer) aab_id at CSV lines: {examples}")
 
     t["index"] = num.astype("int64").values  # return filtered data
     return t
@@ -394,30 +423,31 @@ def _write_index_with_sources(
     Align IDs with sources by '|' slots (must match; no round-robin). Within each slot:
       - IDs are ';'-split and normalized with 'id_normalizer'.
       - Sources are ';'-split and normalized to PubMed/HTTP URLs.
-      - Emit Cartesian product of values and sources; if no sources in slot, emit (value, "").
+      - Emit Cartesian product of values and sources; missing sources raise errors.
     """
     rows: List[Tuple[int, str, str]] = []
-    have_cols = {id_col_in, src_col_in}.issubset(df.columns)
-    if not have_cols:
-        pd.DataFrame(columns=list(out_cols)).to_csv(out_path, index=False)
-        return
+    missing = {id_col_in, src_col_in} - set(df.columns)
+    if missing:
+        raise ValueError(f"Missing required columns: {sorted(missing)}")
 
     for idx, grp in df.groupby("index", sort=True):
-        pairs = pair_values_and_sources_by_slot(
-            join_col(grp, id_col_in),
-            join_col(grp, src_col_in),
-            idx_for_error=idx,
-            value_col_name=id_col_in,
-            source_col_name=src_col_in,
-        )
-        # normalize IDs and dedup (id, source)
         seen = set()
-        for v, s in pairs:
-            v_norm = id_normalizer(v)
-            key = (v_norm, s)
-            if v_norm and key not in seen:
-                seen.add(key)
-                rows.append((idx, v_norm, s))
+        # Check rows individually: joining rows can conceal missing source slots.
+        for row_number, row in grp.iterrows():
+            pairs = pair_values_and_sources_by_slot(
+                row[id_col_in],
+                row[src_col_in],
+                idx_for_error=f"{idx} (CSV line {row_number + 2})",
+                value_col_name=id_col_in,
+                source_col_name=src_col_in,
+            )
+            # Deduplicate the same (ID, source) across rows of one AAb.
+            for v, s in pairs:
+                v_norm = id_normalizer(v)
+                key = (v_norm, s)
+                if v_norm and key not in seen:
+                    seen.add(key)
+                    rows.append((idx, v_norm, s))
 
     pd.DataFrame(rows, columns=list(out_cols)).to_csv(out_path, index=False)
 
